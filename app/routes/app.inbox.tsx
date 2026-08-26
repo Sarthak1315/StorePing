@@ -1,6 +1,6 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useFetcher, useSearchParams } from "@remix-run/react";
-import { useState, useEffect, useRef } from "react";
+import { useLoaderData, useFetcher, useSearchParams, useRevalidator } from "@remix-run/react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   Page,
   Layout,
@@ -19,11 +19,12 @@ import {
   Icon,
   Modal,
   FormLayout,
+  Tooltip,
 } from "@shopify/polaris";
-import { SearchIcon, SendIcon, ChatIcon, PlusIcon } from "@shopify/polaris-icons";
+import { SearchIcon, SendIcon, ChatIcon, PlusIcon, RefreshIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
+import { sendWhatsAppMessage, subscribeWabaToWebhooks } from "../utils/meta-whatsapp.server";
 import { logInfo, logError } from "../utils/logger.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -32,7 +33,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const url = new URL(request.url);
   const searchQuery = (url.searchParams.get("q") || "").trim();
-  const filterTab = url.searchParams.get("filter") || "all";
   const selectedPhone = url.searchParams.get("phone") || "";
 
   try {
@@ -49,67 +49,39 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       });
     }
 
-    // Seed sample conversation if table is completely empty
-    try {
-      const count = await db.conversation.count({ where: { merchantId: merchant.id } });
-      if (count === 0) {
-        const welcomeConv = await db.conversation.create({
-          data: {
-            merchantId: merchant.id,
-            customerPhone: "919374626600",
-            customerName: "Sarthak Patel",
-            lastOrderNumber: "#1001",
-            lastMessageText: "Hello! Welcome to StorePing WhatsApp Live Inbox.",
-            lastMessageAt: new Date(),
-            unreadCount: 0,
-            status: "ACTIVE",
-            cswExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-          },
-        });
-
-        await db.chatMessage.create({
-          data: {
-            conversationId: welcomeConv.id,
-            sender: "BOT",
-            messageType: "TEXT",
-            bodyText: "Hello! Welcome to StorePing WhatsApp Live Inbox. All customer chats and order notifications appear here in real time.",
-            status: "DELIVERED",
-          },
-        });
-      }
-    } catch (seedErr: any) {
-      console.warn("Seeding initial conversation notice:", seedErr);
+    // Auto-subscribe WABA to Meta Cloud API webhooks so incoming messages always flow in!
+    if (merchant.isWhatsAppConnected && merchant.wabaId) {
+      subscribeWabaToWebhooks(merchant.id).catch((err) =>
+        console.warn("WABA auto-subscription notice:", err)
+      );
     }
 
-    // Build Prisma search filter
+    // Build optimized database search filter
     const whereClause: any = {
       merchantId: merchant.id,
     };
 
     if (searchQuery) {
+      const cleanSearch = searchQuery.replace(/[^a-zA-Z0-9#]/g, "");
       whereClause.OR = [
-        { customerPhone: { contains: searchQuery } },
+        { customerPhone: { contains: cleanSearch } },
         { customerName: { contains: searchQuery, mode: "insensitive" } },
         { lastOrderNumber: { contains: searchQuery, mode: "insensitive" } },
         { lastMessageText: { contains: searchQuery, mode: "insensitive" } },
       ];
     }
 
-    if (filterTab === "unread") {
-      whereClause.unreadCount = { gt: 0 };
-    } else if (filterTab === "active") {
-      whereClause.status = "ACTIVE";
-    }
-
+    // Fetch conversations with indexed sorting & latest messages limit
     const conversations = await db.conversation.findMany({
       where: whereClause,
       orderBy: { lastMessageAt: "desc" },
       include: {
         messages: {
           orderBy: { createdAt: "asc" },
+          take: 50,
         },
       },
-      take: 50,
+      take: 100,
     });
 
     const activeConversation =
@@ -119,18 +91,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       merchant,
       conversations,
       activeConversation,
+      initialSelectedPhone: selectedPhone || activeConversation?.customerPhone || "",
       searchQuery,
-      filterTab,
       loadError: null,
     });
   } catch (err: any) {
-    await logError(`Inbox loader issue: ${err.message}`, { shop, source: "inbox" });
+    await logError(`Inbox loader error: ${err.message}`, { shop, source: "inbox" });
     return json({
       merchant: { id: "temp", shop, isWhatsAppConnected: false, displayPhoneNumber: null },
       conversations: [],
       activeConversation: null,
+      initialSelectedPhone: "",
       searchQuery,
-      filterTab,
       loadError: err.message,
     });
   }
@@ -169,10 +141,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
 
       await logInfo(`Merchant replied to customer ${customerPhone}`, { shop, source: "inbox" });
-      return json({ success: true, error: null, messageId: result.messageId, newPhone: null });
+      return json({ success: true, error: null, messageId: result.messageId, newPhone: null, sentText: messageText });
     } catch (err: any) {
       await logError(`Failed to send reply: ${err.message}`, { shop, source: "inbox" });
-      return json({ success: false, error: err.message, messageId: null, newPhone: null }, { status: 500 });
+      return json({ success: false, error: err.message, messageId: null, newPhone: null });
     }
   }
 
@@ -204,7 +176,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return json({ success: false, error: result.error || "Failed to deliver WhatsApp message", messageId: null, newPhone: null }, { status: 500 });
       }
 
-      const conv = await db.conversation.upsert({
+      await db.conversation.upsert({
         where: {
           merchantId_customerPhone: {
             merchantId: merchant.id,
@@ -251,15 +223,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function WhatsAppInboxPage() {
-  const { merchant, conversations, activeConversation, searchQuery, loadError } =
+  const { merchant, conversations, initialSelectedPhone, searchQuery, loadError } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const actionData = fetcher.data as any;
   const [searchParams, setSearchParams] = useSearchParams();
+  const revalidator = useRevalidator();
 
+  // Instant Client-Side Tab Switching (0ms delay)
+  const [selectedPhone, setSelectedPhone] = useState<string>(
+    initialSelectedPhone || conversations[0]?.customerPhone || ""
+  );
+
+  // Live Real-Time Search Filter State
   const [localSearch, setLocalSearch] = useState(searchQuery);
   const [replyText, setReplyText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Fast In-Memory Filtering across loaded conversations (0ms on keystroke)
+  const filteredConversations = useMemo(() => {
+    if (!localSearch.trim()) return conversations;
+    const q = localSearch.toLowerCase().replace(/[^a-z0-9#]/g, "");
+
+    return conversations.filter((c: any) => {
+      const phoneMatch = (c.customerPhone || "").replace(/[^0-9]/g, "").includes(q);
+      const nameMatch = (c.customerName || "").toLowerCase().includes(localSearch.toLowerCase());
+      const orderMatch = (c.lastOrderNumber || "").toLowerCase().includes(localSearch.toLowerCase());
+      const msgMatch = (c.lastMessageText || "").toLowerCase().includes(localSearch.toLowerCase());
+      return phoneMatch || nameMatch || orderMatch || msgMatch;
+    });
+  }, [conversations, localSearch]);
+
+  const activeConversation = useMemo(() => {
+    return (
+      conversations.find((c: any) => c.customerPhone === selectedPhone) ||
+      filteredConversations[0] ||
+      conversations[0] ||
+      null
+    );
+  }, [conversations, filteredConversations, selectedPhone]);
 
   // New Conversation Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -284,14 +286,24 @@ export default function WhatsAppInboxPage() {
         setNewPhone("");
         setNewName("");
         setNewOrderNumber("");
-        const params = new URLSearchParams(searchParams);
-        params.set("phone", actionData.newPhone);
-        setSearchParams(params);
+        setSelectedPhone(actionData.newPhone);
+        revalidator.revalidate();
       }
     }
   }, [actionData, fetcher.state]);
 
-  const handleSearchSubmit = () => {
+  // Background auto-refresh every 20 seconds for incoming customer replies
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        revalidator.revalidate();
+      }
+    }, 20000);
+    return () => clearInterval(interval);
+  }, [revalidator]);
+
+  // Deep Server-Side Database Search (for records beyond top loaded cache)
+  const handleDeepSearchSubmit = () => {
     const params = new URLSearchParams(searchParams);
     if (localSearch) {
       params.set("q", localSearch);
@@ -301,10 +313,14 @@ export default function WhatsAppInboxPage() {
     setSearchParams(params);
   };
 
+  // Instant 0ms Local Switch without full page network reloading
   const handleSelectConversation = (phone: string) => {
-    const params = new URLSearchParams(searchParams);
-    params.set("phone", phone);
-    setSearchParams(params);
+    setSelectedPhone(phone);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("phone", phone);
+      window.history.replaceState({}, "", url.toString());
+    }
   };
 
   const handleSendReply = () => {
@@ -336,11 +352,19 @@ export default function WhatsAppInboxPage() {
   return (
     <Page
       title="WhatsApp Live Conversations & Support Inbox"
-      subtitle="Search, view, and reply to all customer WhatsApp chats or start new conversations directly."
+      subtitle="High-speed real-time customer WhatsApp chat with instant live search and direct outreach."
       primaryAction={{
         content: "➕ Start New Chat",
         onAction: () => setIsModalOpen(true),
       }}
+      secondaryActions={[
+        {
+          content: "Refresh Messages",
+          icon: RefreshIcon,
+          loading: revalidator.state === "loading",
+          onAction: () => revalidator.revalidate(),
+        },
+      ]}
       fullWidth
     >
       <BlockStack gap="400">
@@ -357,17 +381,17 @@ export default function WhatsAppInboxPage() {
         )}
 
         <Layout>
-          {/* Left Column: Search, New Chat & Conversations List */}
+          {/* Left Column: Search, New Chat & Instant Filtered Conversations List */}
           <Layout.Section variant="oneThird">
             <Card padding="300">
               <BlockStack gap="300">
-                {/* Search Bar & New Chat CTA */}
+                {/* Instant Live Search Bar */}
                 <div style={{ display: "flex", gap: "8px" }}>
                   <div style={{ flex: 1 }}>
                     <TextField
                       label="Search Conversations"
                       labelHidden
-                      placeholder="Search phone, name, or Order #1001..."
+                      placeholder="Live search phone, name, or #1001..."
                       value={localSearch}
                       onChange={setLocalSearch}
                       autoComplete="off"
@@ -381,7 +405,9 @@ export default function WhatsAppInboxPage() {
                       }}
                     />
                   </div>
-                  <Button onClick={handleSearchSubmit}>Search</Button>
+                  <Tooltip content="Deep Search across all historical DB records">
+                    <Button onClick={handleDeepSearchSubmit}>Search</Button>
+                  </Tooltip>
                 </div>
 
                 <Button icon={PlusIcon} onClick={() => setIsModalOpen(true)} fullWidth>
@@ -390,17 +416,24 @@ export default function WhatsAppInboxPage() {
 
                 <Divider />
 
-                {/* Conversation List */}
+                {/* Instant Filtered Conversation List */}
                 <div style={{ maxHeight: "600px", overflowY: "auto" }}>
-                  {conversations.length === 0 ? (
+                  {filteredConversations.length === 0 ? (
                     <Box padding="400">
                       <Text as="p" tone="subdued" alignment="center">
-                        No conversations found.
+                        {localSearch ? `No matches for "${localSearch}"` : "No conversations found."}
                       </Text>
+                      {localSearch && (
+                        <div style={{ marginTop: "10px", textAlign: "center" }}>
+                          <Button onClick={handleDeepSearchSubmit} size="slim">
+                            Deep Search in Database
+                          </Button>
+                        </div>
+                      )}
                     </Box>
                   ) : (
                     <BlockStack gap="100">
-                      {conversations.map((conv: any) => {
+                      {filteredConversations.map((conv: any) => {
                         const isSelected = activeConversation?.id === conv.id;
                         const hasCSW =
                           conv.cswExpiresAt &&
@@ -416,7 +449,7 @@ export default function WhatsAppInboxPage() {
                               backgroundColor: isSelected ? "#f0fdf4" : "transparent",
                               border: isSelected ? "1px solid #86efac" : "1px solid transparent",
                               cursor: "pointer",
-                              transition: "all 0.15s ease",
+                              transition: "all 0.1s ease",
                             }}
                           >
                             <InlineStack align="space-between" blockAlign="start">

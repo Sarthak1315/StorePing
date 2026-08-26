@@ -44,6 +44,50 @@ export async function registerPhoneNumber(phoneNumberId: string, accessToken: st
 }
 
 /**
+ * Subscribes the WhatsApp Business Account (WABA) to the Meta App for webhooks.
+ * Mandatory by Meta Cloud API to receive incoming customer messages & delivery receipts!
+ */
+export async function subscribeWabaToWebhooks(merchantId: string) {
+  const merchant = await db.merchant.findUnique({ where: { id: merchantId } });
+  if (!merchant || !merchant.wabaId || !merchant.waAccessToken) return false;
+
+  const plainAccessToken = decryptToken(merchant.waAccessToken);
+  const appSecretProof = generateAppSecretProof(plainAccessToken);
+
+  try {
+    const endpoint = `${META_BASE_URL}/${merchant.wabaId}/subscribed_apps?appsecret_proof=${appSecretProof}`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${plainAccessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    const data = (await res.json()) as any;
+    if (data.success) {
+      await logInfo(`Successfully subscribed WABA ${merchant.wabaId} to webhooks ✓`, {
+        shop: merchant.shop,
+        source: "meta-whatsapp",
+      });
+      return true;
+    } else {
+      await logWarn(`WABA subscription response: ${JSON.stringify(data)}`, {
+        shop: merchant.shop,
+        source: "meta-whatsapp",
+      });
+      return false;
+    }
+  } catch (err: any) {
+    await logWarn(`Failed to subscribe WABA to webhooks: ${err.message}`, {
+      shop: merchant.shop,
+      source: "meta-whatsapp",
+    });
+    return false;
+  }
+}
+
+/**
  * Converts template text with named variables {{customer_name}} to Meta positional variables {{1}}, {{2}}
  * and generates sample values required by Meta for instant approval.
  */
@@ -499,6 +543,9 @@ export async function refreshWabaHealth(merchantId: string) {
   const appSecretProof = generateAppSecretProof(plainAccessToken);
 
   try {
+    // Auto-subscribe WABA to Webhooks if not already subscribed
+    await subscribeWabaToWebhooks(merchantId);
+
     const res = await fetch(
       `${META_BASE_URL}/${merchant.phoneNumberId}?fields=verified_name,display_phone_number,quality_rating,messaging_limit_tier&appsecret_proof=${appSecretProof}`,
       {
