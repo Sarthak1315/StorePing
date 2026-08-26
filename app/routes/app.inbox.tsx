@@ -17,8 +17,10 @@ import {
   Tag,
   Avatar,
   Icon,
+  Modal,
+  FormLayout,
 } from "@shopify/polaris";
-import { SearchIcon, SendIcon, ChatIcon } from "@shopify/polaris-icons";
+import { SearchIcon, SendIcon, ChatIcon, PlusIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
@@ -143,12 +145,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const merchant = await db.merchant.findUnique({ where: { shop } });
   if (!merchant) throw new Response("Merchant not found", { status: 404 });
 
+  // 1. Reply to existing conversation
   if (intent === "sendReply") {
     const customerPhone = formData.get("customerPhone") as string;
     const messageText = (formData.get("messageText") as string || "").trim();
 
     if (!customerPhone || !messageText) {
-      return json({ success: false, error: "Message text cannot be empty.", messageId: null }, { status: 400 });
+      return json({ success: false, error: "Message text cannot be empty.", messageId: null, newPhone: null }, { status: 400 });
     }
 
     try {
@@ -162,27 +165,89 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
 
       if (!result.success) {
-        return json({ success: false, error: result.error || "Failed to send WhatsApp message", messageId: null }, { status: 500 });
+        return json({ success: false, error: result.error || "Failed to send WhatsApp message", messageId: null, newPhone: null }, { status: 500 });
       }
 
       await logInfo(`Merchant replied to customer ${customerPhone}`, { shop, source: "inbox" });
-      return json({ success: true, error: null, messageId: result.messageId });
+      return json({ success: true, error: null, messageId: result.messageId, newPhone: null });
     } catch (err: any) {
       await logError(`Failed to send reply: ${err.message}`, { shop, source: "inbox" });
-      return json({ success: false, error: err.message, messageId: null }, { status: 500 });
+      return json({ success: false, error: err.message, messageId: null, newPhone: null }, { status: 500 });
     }
   }
 
+  // 2. Start a New Conversation with Any Number
+  if (intent === "startNewConversation") {
+    let customerPhone = (formData.get("customerPhone") as string || "").trim();
+    const customerName = (formData.get("customerName") as string || "").trim() || "Customer";
+    const orderNumber = (formData.get("orderNumber") as string || "").trim();
+    const messageText = (formData.get("messageText") as string || "").trim();
+
+    if (!customerPhone || !messageText) {
+      return json({ success: false, error: "Please enter a valid phone number and message.", messageId: null, newPhone: null }, { status: 400 });
+    }
+
+    let cleanPhone = customerPhone.replace(/[^0-9]/g, "");
+    if (cleanPhone.length === 10) cleanPhone = `91${cleanPhone}`;
+
+    try {
+      const result = await sendWhatsAppMessage({
+        merchantId: merchant.id,
+        recipientPhone: cleanPhone,
+        customerName,
+        eventType: "MANUAL_OUTREACH",
+        bodyText: messageText,
+        senderRole: "MERCHANT",
+      });
+
+      if (!result.success) {
+        return json({ success: false, error: result.error || "Failed to deliver WhatsApp message", messageId: null, newPhone: null }, { status: 500 });
+      }
+
+      const conv = await db.conversation.upsert({
+        where: {
+          merchantId_customerPhone: {
+            merchantId: merchant.id,
+            customerPhone: cleanPhone,
+          },
+        },
+        create: {
+          merchantId: merchant.id,
+          customerPhone: cleanPhone,
+          customerName,
+          lastOrderNumber: orderNumber || null,
+          lastMessageText: messageText,
+          lastMessageAt: new Date(),
+          status: "ACTIVE",
+        },
+        update: {
+          customerName: customerName || undefined,
+          lastOrderNumber: orderNumber || undefined,
+          lastMessageText: messageText,
+          lastMessageAt: new Date(),
+          status: "ACTIVE",
+        },
+      });
+
+      await logInfo(`Started new conversation with +${cleanPhone}`, { shop, source: "inbox" });
+      return json({ success: true, error: null, messageId: result.messageId, newPhone: cleanPhone });
+    } catch (err: any) {
+      await logError(`Failed to start conversation: ${err.message}`, { shop, source: "inbox" });
+      return json({ success: false, error: err.message, messageId: null, newPhone: null }, { status: 500 });
+    }
+  }
+
+  // 3. Mark Conversation as Resolved
   if (intent === "resolveConversation") {
     const conversationId = formData.get("conversationId") as string;
     await db.conversation.update({
       where: { id: conversationId },
       data: { status: "RESOLVED", unreadCount: 0 },
     });
-    return json({ success: true, error: null, messageId: null });
+    return json({ success: true, error: null, messageId: null, newPhone: null });
   }
 
-  return json({ success: true, error: null, messageId: null });
+  return json({ success: true, error: null, messageId: null, newPhone: null });
 };
 
 export default function WhatsAppInboxPage() {
@@ -196,15 +261,33 @@ export default function WhatsAppInboxPage() {
   const [replyText, setReplyText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // New Conversation Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [newPhone, setNewPhone] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newOrderNumber, setNewOrderNumber] = useState("");
+  const [newInitialMessage, setNewInitialMessage] = useState(
+    "Hello! This is Everon Lab support. How can we help you today? 😊"
+  );
+
   // Auto-scroll chat to bottom on load/update
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeConversation?.messages]);
 
-  // Clear reply input after successful send
+  // Clear reply input or switch to newly started conversation
   useEffect(() => {
     if (actionData?.success && fetcher.state === "idle") {
       setReplyText("");
+      if (actionData?.newPhone) {
+        setIsModalOpen(false);
+        setNewPhone("");
+        setNewName("");
+        setNewOrderNumber("");
+        const params = new URLSearchParams(searchParams);
+        params.set("phone", actionData.newPhone);
+        setSearchParams(params);
+      }
     }
   }, [actionData, fetcher.state]);
 
@@ -233,16 +316,31 @@ export default function WhatsAppInboxPage() {
     fetcher.submit(form, { method: "POST" });
   };
 
+  const handleStartNewChatSubmit = () => {
+    if (!newPhone.trim() || !newInitialMessage.trim()) return;
+    const form = new FormData();
+    form.append("intent", "startNewConversation");
+    form.append("customerPhone", newPhone);
+    form.append("customerName", newName);
+    form.append("orderNumber", newOrderNumber);
+    form.append("messageText", newInitialMessage);
+    fetcher.submit(form, { method: "POST" });
+  };
+
   const isCSWOpen =
     activeConversation?.cswExpiresAt &&
     new Date(activeConversation.cswExpiresAt).getTime() > Date.now();
 
-  const isSending = fetcher.state !== "idle";
+  const isSubmitting = fetcher.state !== "idle";
 
   return (
     <Page
       title="WhatsApp Live Conversations & Support Inbox"
-      subtitle="Search, view, and reply to all customer WhatsApp chats and order inquiries in real time."
+      subtitle="Search, view, and reply to all customer WhatsApp chats or start new conversations directly."
+      primaryAction={{
+        content: "➕ Start New Chat",
+        onAction: () => setIsModalOpen(true),
+      }}
       fullWidth
     >
       <BlockStack gap="400">
@@ -253,17 +351,17 @@ export default function WhatsAppInboxPage() {
         )}
 
         {actionData?.error && (
-          <Banner title="Failed to Send Reply" tone="critical" onDismiss={() => {}}>
+          <Banner title="Operation Notice" tone="critical" onDismiss={() => {}}>
             {actionData.error}
           </Banner>
         )}
 
         <Layout>
-          {/* Left Column: Search & Conversations List */}
+          {/* Left Column: Search, New Chat & Conversations List */}
           <Layout.Section variant="oneThird">
             <Card padding="300">
               <BlockStack gap="300">
-                {/* Search Bar */}
+                {/* Search Bar & New Chat CTA */}
                 <div style={{ display: "flex", gap: "8px" }}>
                   <div style={{ flex: 1 }}>
                     <TextField
@@ -286,10 +384,14 @@ export default function WhatsAppInboxPage() {
                   <Button onClick={handleSearchSubmit}>Search</Button>
                 </div>
 
+                <Button icon={PlusIcon} onClick={() => setIsModalOpen(true)} fullWidth>
+                  Start Chat with New Number
+                </Button>
+
                 <Divider />
 
                 {/* Conversation List */}
-                <div style={{ maxHeight: "650px", overflowY: "auto" }}>
+                <div style={{ maxHeight: "600px", overflowY: "auto" }}>
                   {conversations.length === 0 ? (
                     <Box padding="400">
                       <Text as="p" tone="subdued" alignment="center">
@@ -548,7 +650,7 @@ export default function WhatsAppInboxPage() {
                         variant="primary"
                         icon={SendIcon}
                         onClick={handleSendReply}
-                        loading={isSending}
+                        loading={isSubmitting}
                       >
                         Send Reply
                       </Button>
@@ -565,7 +667,7 @@ export default function WhatsAppInboxPage() {
                       Select a Conversation
                     </Text>
                     <Text as="p" tone="subdued" alignment="center">
-                      Choose a customer chat from the list or search by phone number or order number.
+                      Choose a customer chat from the list, search by phone, or click "Start New Chat" above.
                     </Text>
                   </BlockStack>
                 </Box>
@@ -574,6 +676,58 @@ export default function WhatsAppInboxPage() {
           </Layout.Section>
         </Layout>
       </BlockStack>
+
+      {/* Start New Conversation Modal */}
+      <Modal
+        open={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        title="💬 Start New WhatsApp Conversation"
+        primaryAction={{
+          content: "🚀 Send & Start Chat",
+          onAction: handleStartNewChatSubmit,
+          loading: isSubmitting,
+        }}
+        secondaryActions={[
+          {
+            content: "Cancel",
+            onAction: () => setIsModalOpen(false),
+          },
+        ]}
+      >
+        <Modal.Section>
+          <FormLayout>
+            <TextField
+              label="Recipient Mobile Number"
+              placeholder="+91 9374626600 or 9512534389"
+              value={newPhone}
+              onChange={setNewPhone}
+              autoComplete="off"
+              helpText="Include country code (e.g. +91 9374626600). 10-digit Indian numbers auto-prefix with 91."
+            />
+            <TextField
+              label="Customer Name (Optional)"
+              placeholder="e.g. Rahul Sharma"
+              value={newName}
+              onChange={setNewName}
+              autoComplete="off"
+            />
+            <TextField
+              label="Order Number (Optional)"
+              placeholder="e.g. #1025"
+              value={newOrderNumber}
+              onChange={setNewOrderNumber}
+              autoComplete="off"
+            />
+            <TextField
+              label="Initial Message Body"
+              value={newInitialMessage}
+              onChange={setNewInitialMessage}
+              multiline={3}
+              autoComplete="off"
+            />
+          </FormLayout>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }
