@@ -22,7 +22,7 @@ import db from "../db.server";
 import { seedDefaultTemplates } from "../utils/template.server";
 import { interpolateVariables } from "../utils/template.shared";
 import { logInfo, logError } from "../utils/logger.server";
-import { syncTemplateToMeta } from "../utils/meta-whatsapp.server";
+import { syncTemplateToMeta, sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -52,19 +52,69 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = session.shop;
   const formData = await request.formData();
 
+  const actionType = (formData.get("actionType") as string) || "SAVE";
   const templateId = formData.get("templateId") as string;
-  const bodyText = formData.get("bodyText") as string;
-  const headerType = formData.get("headerType") as string;
-  const headerText = formData.get("headerText") as string;
-  const headerMediaUrl = formData.get("headerMediaUrl") as string;
-  const footerText = formData.get("footerText") as string;
-  const buttonType = formData.get("buttonType") as string;
-  const buttonText = formData.get("buttonText") as string;
-  const buttonUrl = formData.get("buttonUrl") as string;
-  const syncToMeta = formData.get("syncToMeta") === "true";
+  const bodyText = (formData.get("bodyText") as string) || "";
+  const headerType = (formData.get("headerType") as string) || "NONE";
+  const headerText = (formData.get("headerText") as string) || "";
+  const headerMediaUrl = (formData.get("headerMediaUrl") as string) || "";
+  const footerText = (formData.get("footerText") as string) || "";
+  const buttonType = (formData.get("buttonType") as string) || "NONE";
+  const buttonText = (formData.get("buttonText") as string) || "";
+  const buttonUrl = (formData.get("buttonUrl") as string) || "";
 
   const merchant = await db.merchant.findUnique({ where: { shop } });
   if (!merchant) throw new Response("Merchant not found", { status: 404 });
+
+  // 1. Handle Test Message Sending from Templates Page
+  if (actionType === "SEND_TEST") {
+    let testPhone = (formData.get("testPhone") as string) || "9374626600";
+    testPhone = testPhone.replace(/[^0-9]/g, "");
+    if (testPhone.length === 10) testPhone = `91${testPhone}`;
+
+    const sampleVariables = {
+      customer_name: "Rahul Sharma",
+      order_id: "1024",
+      order_name: "#1024",
+      total_price: "₹2,499.00",
+      tracking_number: "IN9823471029",
+      tracking_url: "https://track.shiprocket.in/1024",
+      checkout_url: `https://${shop}/checkouts/c/sample-cart`,
+      discount_code: "SAVE10",
+    };
+
+    const interpolatedBody = interpolateVariables(bodyText, sampleVariables);
+    const interpolatedHeader = interpolateVariables(headerText, sampleVariables);
+    const interpolatedBtnUrl = interpolateVariables(buttonUrl, sampleVariables);
+
+    try {
+      const sendResult = await sendWhatsAppMessage({
+        merchantId: merchant.id,
+        recipientPhone: testPhone,
+        customerName: "Test Recipient",
+        eventType: "TEST_DISPATCH",
+        bodyText: interpolatedBody,
+        headerType: headerType !== "NONE" ? headerType : null,
+        headerText: headerType === "TEXT" ? interpolatedHeader : null,
+        headerMediaUrl: headerType === "IMAGE" ? headerMediaUrl : null,
+        footerText: footerText || null,
+        buttonType: buttonType !== "NONE" ? buttonType : null,
+        buttonText: buttonText || null,
+        buttonUrl: interpolatedBtnUrl || null,
+      });
+
+      if (!sendResult.success) {
+        return json({ success: false, testError: sendResult.error || "Failed to send test message" });
+      }
+
+      return json({ success: true, testSent: true, testPhone, messageId: sendResult.messageId });
+    } catch (err: any) {
+      return json({ success: false, testError: err.message });
+    }
+  }
+
+  // 2. Handle Save & Meta Sync
+  const syncToMeta = formData.get("syncToMeta") === "true";
 
   const updated = await db.template.update({
     where: { id: templateId },
@@ -122,6 +172,7 @@ export default function TemplatesAndSimulatorPage() {
   const [buttonType, setButtonType] = useState<string>(currentTemplate?.buttonType || "QUICK_REPLY");
   const [buttonText, setButtonText] = useState<string>(currentTemplate?.buttonText || "");
   const [buttonUrl, setButtonUrl] = useState<string>(currentTemplate?.buttonUrl || "");
+  const [testPhoneNumber, setTestPhoneNumber] = useState<string>("+91 9374626600");
 
   // Update editor state when selecting different template event
   const handleSelectTemplate = (eventKey: string) => {
@@ -143,11 +194,12 @@ export default function TemplatesAndSimulatorPage() {
     setBodyText((prev: string) => `${prev} {{${variableName}}}`);
   };
 
-  const isSaving = fetcher.state !== "idle";
+  const isSubmitting = fetcher.state !== "idle";
 
   const handleSave = (syncToMeta: boolean = false) => {
     if (!currentTemplate) return;
     const form = new FormData();
+    form.append("actionType", "SAVE");
     form.append("templateId", currentTemplate.id);
     form.append("headerType", headerType);
     form.append("headerText", headerText);
@@ -161,6 +213,23 @@ export default function TemplatesAndSimulatorPage() {
     fetcher.submit(form, { method: "POST" });
   };
 
+  const handleSendTestMessage = () => {
+    if (!currentTemplate) return;
+    const form = new FormData();
+    form.append("actionType", "SEND_TEST");
+    form.append("testPhone", testPhoneNumber);
+    form.append("templateId", currentTemplate.id);
+    form.append("headerType", headerType);
+    form.append("headerText", headerText);
+    form.append("headerMediaUrl", headerMediaUrl);
+    form.append("bodyText", bodyText);
+    form.append("footerText", footerText);
+    form.append("buttonType", buttonType);
+    form.append("buttonText", buttonText);
+    form.append("buttonUrl", buttonUrl);
+    fetcher.submit(form, { method: "POST" });
+  };
+
   // Mock variables for live simulator preview
   const sampleVariables = {
     customer_name: "Rahul Sharma",
@@ -169,7 +238,7 @@ export default function TemplatesAndSimulatorPage() {
     total_price: "₹2,499.00",
     tracking_number: "IN9823471029",
     tracking_url: "https://track.shiprocket.in/1024",
-    checkout_url: "https://satjewells-2.myshopify.com/checkouts/c/123",
+    checkout_url: `https://${merchant.shop}/checkouts/c/123`,
     discount_code: "SAVE10",
   };
 
@@ -200,12 +269,26 @@ export default function TemplatesAndSimulatorPage() {
   return (
     <Page
       title="WhatsApp Message Templates & Live Simulator"
-      subtitle="Create, customize, and sync WhatsApp message templates directly to Meta Cloud API."
+      subtitle="Create, customize, and test WhatsApp message templates directly on your phone."
     >
       <BlockStack gap="500">
-        {fetcher.data?.success && !fetcher.data?.metaSyncError && (
+        {fetcher.data?.testSent && (
+          <Banner title="Test Message Delivered! 🚀" tone="success" onDismiss={() => {}}>
+            Live test message was successfully dispatched via Meta Cloud API to <strong>{fetcher.data.testPhone}</strong>. Check your WhatsApp!
+          </Banner>
+        )}
+
+        {fetcher.data?.testError && (
+          <Banner title="Test Message Failed" tone="critical" onDismiss={() => {}}>
+            {fetcher.data.testError}
+          </Banner>
+        )}
+
+        {fetcher.data?.success && !fetcher.data?.testSent && !fetcher.data?.metaSyncError && (
           <Banner title="Template Saved Successfully" tone="success" onDismiss={() => {}}>
-            {fetcher.data?.metaSyncResult ? "Template updated in StorePing and successfully synced to Meta WhatsApp Business Account." : "Template updated in StorePing."}
+            {fetcher.data?.metaSyncResult
+              ? "Template updated in StorePing and successfully synced to Meta WhatsApp Business Account."
+              : "Template updated in StorePing."}
           </Banner>
         )}
 
@@ -333,10 +416,10 @@ export default function TemplatesAndSimulatorPage() {
                 )}
 
                 <InlineStack gap="300" align="end">
-                  <Button onClick={() => handleSave(false)} loading={isSaving}>
+                  <Button onClick={() => handleSave(false)} loading={isSubmitting}>
                     Save in StorePing
                   </Button>
-                  <Button variant="primary" onClick={() => handleSave(true)} loading={isSaving}>
+                  <Button variant="primary" onClick={() => handleSave(true)} loading={isSubmitting}>
                     ⚡ Save & Sync to Meta WhatsApp
                   </Button>
                 </InlineStack>
@@ -344,193 +427,223 @@ export default function TemplatesAndSimulatorPage() {
             </Card>
           </Layout.Section>
 
-          {/* Right Column: Realistic WhatsApp Phone Mockup Simulator */}
+          {/* Right Column: Realistic WhatsApp Phone Mockup Simulator & Test Dispatch */}
           <Layout.Section variant="oneThird">
-            <Card>
-              <BlockStack gap="400">
-                <InlineStack align="space-between">
-                  <Text as="h2" variant="headingMd">
-                    Live Phone Simulator
-                  </Text>
-                  <Badge tone="success">Meta Cloud API Preview</Badge>
-                </InlineStack>
-                <Divider />
+            <BlockStack gap="400">
+              <Card>
+                <BlockStack gap="400">
+                  <InlineStack align="space-between">
+                    <Text as="h2" variant="headingMd">
+                      Live Phone Simulator
+                    </Text>
+                    <Badge tone="success">Meta Preview</Badge>
+                  </InlineStack>
+                  <Divider />
 
-                {/* WhatsApp Phone Mockup Container */}
-                <Box
-                  background="bg-surface-secondary"
-                  padding="400"
-                  borderRadius="300"
-                  borderWidth="025"
-                  borderColor="border"
-                >
-                  {/* Phone Header Bar */}
-                  <div
-                    style={{
-                      backgroundColor: "#075e54",
-                      color: "#ffffff",
-                      padding: "10px 14px",
-                      borderRadius: "8px 8px 0 0",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "10px",
-                    }}
+                  {/* WhatsApp Phone Mockup Container */}
+                  <Box
+                    background="bg-surface-secondary"
+                    padding="400"
+                    borderRadius="300"
+                    borderWidth="025"
+                    borderColor="border"
                   >
+                    {/* Phone Header Bar */}
                     <div
                       style={{
-                        width: "32px",
-                        height: "32px",
-                        borderRadius: "50%",
-                        backgroundColor: "#128c7e",
+                        backgroundColor: "#075e54",
+                        color: "#ffffff",
+                        padding: "10px 14px",
+                        borderRadius: "8px 8px 0 0",
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "center",
-                        fontWeight: "bold",
-                        fontSize: "14px",
+                        gap: "10px",
                       }}
                     >
-                      {merchant.shop.charAt(0).toUpperCase()}
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: "14px" }}>
-                        {merchant.displayPhoneNumber || merchant.shop}
+                      <div
+                        style={{
+                          width: "32px",
+                          height: "32px",
+                          borderRadius: "50%",
+                          backgroundColor: "#128c7e",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontWeight: "bold",
+                          fontSize: "14px",
+                        }}
+                      >
+                        {merchant.shop.charAt(0).toUpperCase()}
                       </div>
-                      <div style={{ fontSize: "10px", opacity: 0.8 }}>
-                        Official Business Account ✓
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: "14px" }}>
+                          {merchant.displayPhoneNumber || merchant.shop}
+                        </div>
+                        <div style={{ fontSize: "10px", opacity: 0.8 }}>
+                          Official Business Account ✓
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Chat Background & Bubble */}
-                  <div
-                    style={{
-                      backgroundColor: "#efeae2",
-                      padding: "16px 12px",
-                      minHeight: "360px",
-                      borderRadius: "0 0 8px 8px",
-                      display: "flex",
-                      flexDirection: "column",
-                      justifyContent: "flex-start",
-                    }}
-                  >
+                    {/* Chat Background & Bubble */}
                     <div
                       style={{
-                        backgroundColor: "#ffffff",
-                        borderRadius: "8px",
-                        padding: "10px 12px",
-                        maxWidth: "92%",
-                        boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
-                        alignSelf: "flex-start",
+                        backgroundColor: "#efeae2",
+                        padding: "16px 12px",
+                        minHeight: "300px",
+                        borderRadius: "0 0 8px 8px",
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "flex-start",
                       }}
                     >
-                      {/* Message Header (Text or Image) */}
-                      {headerType === "TEXT" && simulatedHeader && (
-                        <div
-                          style={{
-                            fontWeight: "bold",
-                            fontSize: "13px",
-                            marginBottom: "6px",
-                            color: "#111827",
-                          }}
-                        >
-                          {simulatedHeader}
-                        </div>
-                      )}
-
-                      {headerType === "IMAGE" && (
-                        <div
-                          style={{
-                            backgroundColor: "#e2e8f0",
-                            borderRadius: "6px",
-                            height: "120px",
-                            marginBottom: "8px",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: "#64748b",
-                            fontSize: "12px",
-                            overflow: "hidden",
-                          }}
-                        >
-                          {headerMediaUrl ? (
-                            <img
-                              src={headerMediaUrl}
-                              alt="Header Preview"
-                              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                            />
-                          ) : (
-                            "🖼️ Image Preview"
-                          )}
-                        </div>
-                      )}
-
-                      {/* Message Body */}
-                      <div
-                        style={{
-                          fontSize: "13px",
-                          lineHeight: "1.45",
-                          color: "#334155",
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {simulatedBody || "Your message body will appear here..."}
-                      </div>
-
-                      {/* Message Footer */}
-                      {footerText && (
-                        <div
-                          style={{
-                            fontSize: "11px",
-                            color: "#94a3b8",
-                            marginTop: "6px",
-                          }}
-                        >
-                          {footerText}
-                        </div>
-                      )}
-
-                      {/* Timestamp & Delivered Double Checkmark */}
-                      <div
-                        style={{
-                          textAlign: "right",
-                          fontSize: "10px",
-                          color: "#94a3b8",
-                          marginTop: "4px",
-                        }}
-                      >
-                        12:30 PM <span style={{ color: "#34b7f1" }}>✓✓</span>
-                      </div>
-                    </div>
-
-                    {/* Interactive Button */}
-                    {buttonType !== "NONE" && buttonText && (
                       <div
                         style={{
                           backgroundColor: "#ffffff",
                           borderRadius: "8px",
-                          marginTop: "4px",
-                          padding: "8px",
-                          textAlign: "center",
-                          color: "#00a884",
-                          fontWeight: 600,
-                          fontSize: "13px",
-                          boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                          padding: "10px 12px",
                           maxWidth: "92%",
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: "6px",
+                          boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                          alignSelf: "flex-start",
                         }}
                       >
-                        {buttonType === "CTA_URL" ? "🔗" : "💬"} {buttonText}
+                        {/* Message Header (Text or Image) */}
+                        {headerType === "TEXT" && simulatedHeader && (
+                          <div
+                            style={{
+                              fontWeight: "bold",
+                              fontSize: "13px",
+                              marginBottom: "6px",
+                              color: "#111827",
+                            }}
+                          >
+                            {simulatedHeader}
+                          </div>
+                        )}
+
+                        {headerType === "IMAGE" && (
+                          <div
+                            style={{
+                              backgroundColor: "#e2e8f0",
+                              borderRadius: "6px",
+                              height: "120px",
+                              marginBottom: "8px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              color: "#64748b",
+                              fontSize: "12px",
+                              overflow: "hidden",
+                            }}
+                          >
+                            {headerMediaUrl ? (
+                              <img
+                                src={headerMediaUrl}
+                                alt="Header Preview"
+                                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                              />
+                            ) : (
+                              "🖼️ Image Preview"
+                            )}
+                          </div>
+                        )}
+
+                        {/* Message Body */}
+                        <div
+                          style={{
+                            fontSize: "13px",
+                            lineHeight: "1.45",
+                            color: "#334155",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                          }}
+                        >
+                          {simulatedBody || "Your message body will appear here..."}
+                        </div>
+
+                        {/* Message Footer */}
+                        {footerText && (
+                          <div
+                            style={{
+                              fontSize: "11px",
+                              color: "#94a3b8",
+                              marginTop: "6px",
+                            }}
+                          >
+                            {footerText}
+                          </div>
+                        )}
+
+                        {/* Timestamp & Delivered Double Checkmark */}
+                        <div
+                          style={{
+                            textAlign: "right",
+                            fontSize: "10px",
+                            color: "#94a3b8",
+                            marginTop: "4px",
+                          }}
+                        >
+                          12:30 PM <span style={{ color: "#34b7f1" }}>✓✓</span>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </Box>
-              </BlockStack>
-            </Card>
+
+                      {/* Interactive Button */}
+                      {buttonType !== "NONE" && buttonText && (
+                        <div
+                          style={{
+                            backgroundColor: "#ffffff",
+                            borderRadius: "8px",
+                            marginTop: "4px",
+                            padding: "8px",
+                            textAlign: "center",
+                            color: "#00a884",
+                            fontWeight: 600,
+                            fontSize: "13px",
+                            boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                            maxWidth: "92%",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: "6px",
+                          }}
+                        >
+                          {buttonType === "CTA_URL" ? "🔗" : "💬"} {buttonText}
+                        </div>
+                      )}
+                    </div>
+                  </Box>
+                </BlockStack>
+              </Card>
+
+              {/* Instant Test Dispatch Card */}
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h3" variant="headingSm">
+                    📱 Test This Template on Your Phone
+                  </Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Dispatches this live template configuration directly to your WhatsApp.
+                  </Text>
+                  <TextField
+                    label="Recipient WhatsApp Number"
+                    value={testPhoneNumber}
+                    onChange={setTestPhoneNumber}
+                    autoComplete="off"
+                    helpText="Include country code (e.g. +91 9374626600)"
+                  />
+                  <Button
+                    variant="primary"
+                    tone="success"
+                    onClick={handleSendTestMessage}
+                    loading={isSubmitting}
+                    fullWidth
+                  >
+                    🚀 Send Test to WhatsApp
+                  </Button>
+                </BlockStack>
+              </Card>
+            </BlockStack>
           </Layout.Section>
         </Layout>
       </BlockStack>
