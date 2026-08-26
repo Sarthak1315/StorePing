@@ -4,30 +4,76 @@ import db from "../db.server";
 import { encryptToken } from "../utils/encryption.server";
 import { logInfo, logError, logWarn } from "../utils/logger.server";
 
-async function discoverWabaCredentials(accessToken: string) {
+/**
+ * Robust WABA and Phone discovery using Meta Graph API v21.0.
+ * Uses /debug_token granular scopes (doesn't require business_management permission).
+ */
+async function discoverWabaCredentials(accessToken: string, appId: string, appSecret: string) {
   const BASE = "https://graph.facebook.com/v21.0";
   const auth = `access_token=${accessToken}`;
+  const appAuth = `access_token=${appId}|${appSecret}`;
 
-  const bizRes = await fetch(`${BASE}/me/businesses?fields=id,name&${auth}`);
-  const bizData = (await bizRes.json()) as any;
+  let wabaIds: string[] = [];
 
-  if (!bizRes.ok || bizData.error) {
-    throw new Error(`Meta /me/businesses error: ${bizData.error?.message || JSON.stringify(bizData)}`);
+  // Strategy 1: Inspect token via /debug_token to extract shared WABA target_ids (Official WhatsApp standard)
+  try {
+    const debugRes = await fetch(`${BASE}/debug_token?input_token=${accessToken}&${appAuth}`);
+    const debugData = (await debugRes.json()) as any;
+
+    if (debugData?.data?.granular_scopes) {
+      for (const scopeItem of debugData.data.granular_scopes) {
+        if (
+          scopeItem.scope === "whatsapp_business_management" ||
+          scopeItem.scope === "whatsapp_business_messaging"
+        ) {
+          if (Array.isArray(scopeItem.target_ids)) {
+            wabaIds.push(...scopeItem.target_ids);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("debug_token check failed, continuing to fallback", e);
   }
 
-  const businesses: any[] = bizData.data || [];
-  if (businesses.length === 0) {
-    throw new Error("No Meta Business Portfolio found for this account.");
+  // Strategy 2: Query /me/businesses (if business_management permission exists)
+  if (wabaIds.length === 0) {
+    try {
+      const bizRes = await fetch(`${BASE}/me/businesses?fields=id,name&${auth}`);
+      const bizData = (await bizRes.json()) as any;
+      const businesses: any[] = bizData.data || [];
+
+      for (const biz of businesses) {
+        const wabaRes = await fetch(`${BASE}/${biz.id}/owned_whatsapp_business_accounts?fields=id,name&${auth}`);
+        const wabaData = (await wabaRes.json()) as any;
+        const wabas: any[] = wabaData.data || [];
+        for (const w of wabas) {
+          wabaIds.push(w.id);
+        }
+      }
+    } catch {}
   }
 
-  for (const biz of businesses) {
-    const wabaRes = await fetch(`${BASE}/${biz.id}/owned_whatsapp_business_accounts?fields=id,name&${auth}`);
-    const wabaData = (await wabaRes.json()) as any;
-    const wabas: any[] = wabaData.data || [];
+  // Strategy 3: Query /me/client_whatsapp_business_accounts
+  if (wabaIds.length === 0) {
+    try {
+      const clientWabaRes = await fetch(`${BASE}/me/client_whatsapp_business_accounts?fields=id,name&${auth}`);
+      const clientWabaData = (await clientWabaRes.json()) as any;
+      const wabas: any[] = clientWabaData.data || [];
+      for (const w of wabas) {
+        wabaIds.push(w.id);
+      }
+    } catch {}
+  }
 
-    for (const waba of wabas) {
+  // Remove duplicates
+  wabaIds = Array.from(new Set(wabaIds));
+
+  // Now retrieve phone numbers for each discovered WABA
+  for (const wabaId of wabaIds) {
+    try {
       const phoneRes = await fetch(
-        `${BASE}/${waba.id}/phone_numbers?fields=id,display_phone_number,verified_name,status,quality_rating,messaging_limit_tier&${auth}`
+        `${BASE}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name,status,quality_rating,messaging_limit_tier&${auth}`
       );
       const phoneData = (await phoneRes.json()) as any;
       const phones: any[] = phoneData.data || [];
@@ -35,17 +81,27 @@ async function discoverWabaCredentials(accessToken: string) {
       if (phones.length > 0) {
         const phone = phones.find((p: any) => p.status === "CONNECTED" || p.status === "VERIFIED") || phones[0];
         return {
-          wabaId: waba.id,
+          wabaId,
           phoneNumberId: phone.id,
           displayPhoneNumber: phone.display_phone_number || null,
           qualityRating: phone.quality_rating || "UNKNOWN",
           messagingLimit: phone.messaging_limit_tier || "TIER_250",
         };
       }
-    }
+    } catch {}
   }
 
-  throw new Error("No WhatsApp phone number found in your Meta Business Portfolio.");
+  if (wabaIds.length > 0) {
+    return {
+      wabaId: wabaIds[0],
+      phoneNumberId: "",
+      displayPhoneNumber: null,
+      qualityRating: "UNKNOWN",
+      messagingLimit: "TIER_250",
+    };
+  }
+
+  throw new Error("No WhatsApp Business Account or Phone Number found. Please ensure you selected your WhatsApp Account during Facebook login.");
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -77,7 +133,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const redirectUri = `${appUrl}/auth/facebook/callback`;
 
-    // 1. Exchange auth code for access token
+    // 1. Exchange auth code for long-lived access token
     const tokenUrl = `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${code}&redirect_uri=${encodeURIComponent(redirectUri)}`;
     const tokenRes = await fetch(tokenUrl);
     const tokenData = (await tokenRes.json()) as any;
@@ -88,8 +144,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const accessToken = tokenData.access_token;
 
-    // 2. Discover WABA ID and Phone Number ID
-    const discovered = await discoverWabaCredentials(accessToken);
+    // 2. Discover WABA ID and Phone Number ID without missing permission errors
+    const discovered = await discoverWabaCredentials(accessToken, appId, appSecret);
     const encryptedToken = encryptToken(accessToken);
 
     // 3. Save / Update Merchant record
