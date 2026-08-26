@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { enqueueJob, cancelCartRecoveryJobs } from "../utils/queue.server";
+import { enqueueJob, cancelCartRecoveryJobs, processPendingJobs } from "../utils/queue.server";
 import { normalizePhoneNumber } from "../utils/phone.utils";
 import { logInfo, logWarn } from "../utils/logger.server";
 
@@ -25,7 +25,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       case "CHECKOUTS_UPDATE": {
         if (!merchant.cartRecoveryEnabled) break;
 
-        const customerPhone = normalizePhoneNumber(data.phone || data.customer?.phone || data.shipping_address?.phone);
+        const customerPhone = normalizePhoneNumber(
+          data.phone ||
+          data.customer?.phone ||
+          data.shipping_address?.phone ||
+          data.billing_address?.phone ||
+          data.customer?.default_address?.phone
+        );
         if (!customerPhone) break;
 
         const checkoutToken = data.token;
@@ -117,7 +123,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         break;
       }
 
-      // 🧾 Order Placed
+      // 🧾 Order Placed (Storefront or Admin Draft Order)
       case "ORDERS_CREATE": {
         // 1. Instantly cancel any abandoned cart jobs for this checkout
         const checkoutToken = data.checkout_token || data.token;
@@ -127,8 +133,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         if (!merchant.orderConfirmEnabled) break;
 
-        const customerPhone = normalizePhoneNumber(data.phone || data.customer?.phone || data.shipping_address?.phone);
-        if (!customerPhone) break;
+        const customerPhone = normalizePhoneNumber(
+          data.phone ||
+          data.customer?.phone ||
+          data.shipping_address?.phone ||
+          data.billing_address?.phone ||
+          data.customer?.default_address?.phone
+        );
+
+        if (!customerPhone) {
+          await logInfo(`Order #${data.order_number || data.name} has no customer mobile number attached. Skipped WhatsApp confirmation.`, {
+            shop,
+            source: "webhook",
+          });
+          break;
+        }
 
         const orderNumber = String(data.order_number || data.name || data.id);
         const customerName = data.customer?.first_name || data.shipping_address?.first_name || "Valued Customer";
@@ -156,7 +175,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           0 // Immediate
         );
 
-        await logInfo(`Enqueued order confirmation for Order #${orderNumber}`, { shop, source: "webhook" });
+        await logInfo(`Enqueued order confirmation for Order #${orderNumber} to +${customerPhone}`, { shop, source: "webhook" });
+
+        // Process immediately for instant customer delivery
+        try {
+          await processPendingJobs(10);
+        } catch (procErr: any) {
+          console.warn("Immediate job processing error:", procErr);
+        }
         break;
       }
 
@@ -167,7 +193,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         if (!merchant.orderShippedEnabled) break;
 
         const fulfillment = data.fulfillment || data;
-        const customerPhone = normalizePhoneNumber(data.phone || data.destination?.phone || data.customer?.phone);
+        const customerPhone = normalizePhoneNumber(
+          data.phone ||
+          data.destination?.phone ||
+          data.customer?.phone ||
+          data.shipping_address?.phone ||
+          data.billing_address?.phone
+        );
+
         if (!customerPhone) break;
 
         const customerName = data.customer?.first_name || data.destination?.first_name || "Customer";
@@ -200,7 +233,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           0 // Immediate
         );
 
-        await logInfo(`Enqueued ${eventType} notification for Order #${orderNumber}`, { shop, source: "webhook" });
+        await logInfo(`Enqueued ${eventType} notification for Order #${orderNumber} to +${customerPhone}`, { shop, source: "webhook" });
+
+        // Process immediately for instant customer delivery
+        try {
+          await processPendingJobs(10);
+        } catch (procErr: any) {
+          console.warn("Immediate fulfillment job processing error:", procErr);
+        }
         break;
       }
 

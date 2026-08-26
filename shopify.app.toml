@@ -37,5 +37,9 @@ api_version = "2025-01"
   topics = ["app/scopes_update"]
   uri = "/webhooks/app/scopes_update"
 
+  [[webhooks.subscriptions]]
+  topics = ["orders/create", "orders/fulfilled", "fulfillments/create", "fulfillments/update", "checkouts/create", "checkouts/update"]
+  uri = "/webhooks"
+
 [pos]
 embedded = false

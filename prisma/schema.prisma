@@ -5,14 +5,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL") 
 }
+
 // 1. Shopify Session Storage for Offline OAuth
 model Session {
   id                  String    @id
@@ -63,13 +61,15 @@ model Merchant {
   alertType              String?   // LIMIT_EXCEEDED, PAYMENT_REQUIRED, QUALITY_FLAGGED, NONE
   alertMessage           String?   @db.Text
   
-  // Automation Toggles
+  // Automation Toggles (7 Core Flows)
   cartRecoveryEnabled    Boolean   @default(true)
   orderConfirmEnabled    Boolean   @default(true)
   orderShippedEnabled    Boolean   @default(true)
   orderDeliveredEnabled  Boolean   @default(true)
-  reEngagementEnabled    Boolean   @default(false)
+  promotionsEnabled      Boolean   @default(true)
+  reEngagementEnabled    Boolean   @default(true)
   codVerificationEnabled Boolean   @default(true)
+  supportChatEnabled     Boolean   @default(true)
   
   // Cart Recovery Delays (in minutes)
   cartDelay1             Int       @default(30)   // 30 min
@@ -84,16 +84,17 @@ model Merchant {
   jobs                   Job[]
   messages               MessageLog[]
   cartRecoveries         CartRecovery[]
+  conversations          Conversation[]
 
   @@map("storeping_Merchant")
 }
 
-// 3. Custom Visual Templates
+// 3. Custom Visual Templates (7 Core Flows)
 model Template {
   id             String    @id @default(uuid())
   merchantId     String
   merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  eventType      String    // CART_RECOVERY_1, CART_RECOVERY_2, ORDER_CONFIRM, ORDER_SHIPPED, ORDER_DELIVERED, WIN_BACK, PROMOTION
+  eventType      String    // CART_RECOVERY_1, CART_RECOVERY_2, CART_RECOVERY_3, ORDER_CONFIRM, ORDER_SHIPPED, ORDER_DELIVERED, PROMOTION, WIN_BACK, SUPPORT_AUTO_REPLY
   name           String
   language       String    @default("en")
   headerType     String?   @default("NONE") // NONE, TEXT, IMAGE
@@ -181,7 +182,49 @@ model MessageLog {
   @@map("storeping_MessageLog")
 }
 
-// 7. DPDP Act 2023 Consent Audit Record
+// 7. Live Customer Support & 2-Way Conversations Inbox
+model Conversation {
+  id                 String        @id @default(uuid())
+  merchantId         String
+  merchant           Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  customerPhone      String
+  customerName       String?
+  lastOrderNumber    String?       // E.g. #1001 or #1024
+  lastOrderId        String?
+  lastMessageText    String?       @db.Text
+  lastMessageAt      DateTime      @default(now())
+  unreadCount        Int           @default(0)
+  status             String        @default("ACTIVE") // ACTIVE, CLOSED, RESOLVED
+  cswExpiresAt       DateTime?     // Customer service window expiration (24h)
+  
+  messages           ChatMessage[]
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@unique([merchantId, customerPhone])
+  @@index([merchantId, lastMessageAt])
+  @@index([merchantId, customerPhone])
+  @@index([merchantId, lastOrderNumber])
+  @@map("storeping_Conversation")
+}
+
+model ChatMessage {
+  id                 String        @id @default(uuid())
+  conversationId     String
+  conversation       Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender             String        // "MERCHANT" | "CUSTOMER" | "BOT"
+  messageType        String        @default("TEXT") // TEXT, TEMPLATE, INTERACTIVE, IMAGE
+  bodyText           String        @db.Text
+  metaMessageId      String?       @unique
+  status             String        @default("SENT") // SENT, DELIVERED, READ, FAILED
+  errorMessage       String?
+  createdAt          DateTime      @default(now())
+
+  @@index([conversationId, createdAt])
+  @@map("storeping_ChatMessage")
+}
+
+// 8. DPDP Act 2023 Consent Audit Record
 model DPDPConsent {
   id             String    @id @default(uuid())
   shop           String    @unique
@@ -198,7 +241,7 @@ model DPDPConsent {
   @@map("storeping_DPDPConsent")
 }
 
-// 8. Application Logging & Audit Trail
+// 9. Application Logging & Audit Trail
 model Log {
   id        String   @id @default(uuid())
   shop      String?
