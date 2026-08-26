@@ -1,0 +1,34 @@
+# Node dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Environment variables (CRITICAL: Never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+build/
+public/build/
+.cache/
+.react-router/
+
+# Shopify CLI
+.shopify/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/

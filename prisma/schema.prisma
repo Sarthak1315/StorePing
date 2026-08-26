@@ -1,0 +1,211 @@
+// StorePing Database Schema (PostgreSQL with storeping_ table mapping)
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 1. Shopify Session Storage for Offline OAuth
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@index([shop])
+  @@map("storeping_Session")
+}
+
+// 2. Merchant Profile & Meta WhatsApp Business Account Credentials
+model Merchant {
+  id                     String    @id @default(uuid())
+  shop                   String    @unique
+  name                   String?
+  email                  String?
+  phone                  String?
+  currency               String    @default("INR")
+  timezone               String    @default("Asia/Kolkata")
+  
+  // WhatsApp / Meta Credentials (waAccessToken is AES-256-GCM encrypted)
+  isWhatsAppConnected    Boolean   @default(false)
+  metaBusinessId         String?
+  wabaId                 String?
+  phoneNumberId          String?
+  displayPhoneNumber     String?
+  waAccessToken          String?   @db.Text
+  qualityRating          String?   @default("UNKNOWN") // GREEN, YELLOW, RED
+  messagingLimit         String?   @default("TIER_250") // TIER_250, TIER_1K, TIER_10K, TIER_100K, UNLIMITED
+  
+  // Real-time Limit & Payment Alerts
+  dailySentCount         Int       @default(0)
+  dailyLimitResetAt      DateTime  @default(now())
+  alertType              String?   // LIMIT_EXCEEDED, PAYMENT_REQUIRED, QUALITY_FLAGGED, NONE
+  alertMessage           String?   @db.Text
+  
+  // Automation Toggles
+  cartRecoveryEnabled    Boolean   @default(true)
+  orderConfirmEnabled    Boolean   @default(true)
+  orderShippedEnabled    Boolean   @default(true)
+  orderDeliveredEnabled  Boolean   @default(true)
+  reEngagementEnabled    Boolean   @default(false)
+  codVerificationEnabled Boolean   @default(true)
+  
+  // Cart Recovery Delays (in minutes)
+  cartDelay1             Int       @default(30)   // 30 min
+  cartDelay2             Int       @default(360)  // 6 hours
+  cartDelay3             Int       @default(1440) // 24 hours
+  cartDiscountCode       String?
+  
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  templates              Template[]
+  jobs                   Job[]
+  messages               MessageLog[]
+  cartRecoveries         CartRecovery[]
+
+  @@map("storeping_Merchant")
+}
+
+// 3. Custom Visual Templates
+model Template {
+  id             String    @id @default(uuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  eventType      String    // CART_RECOVERY_1, CART_RECOVERY_2, ORDER_CONFIRM, ORDER_SHIPPED, ORDER_DELIVERED, WIN_BACK, PROMOTION
+  name           String
+  language       String    @default("en")
+  headerType     String?   @default("NONE") // NONE, TEXT, IMAGE
+  headerText     String?
+  headerMediaUrl String?
+  bodyText       String    @db.Text
+  footerText     String?
+  buttonType     String?   @default("QUICK_REPLY") // NONE, QUICK_REPLY, CTA_URL
+  buttonText     String?
+  buttonUrl      String?
+  isActive       Boolean   @default(true)
+  metaTemplateId String?
+  
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([merchantId, eventType])
+  @@map("storeping_Template")
+}
+
+// 4. PostgreSQL-Backed Async Job Queue (Zero-Cost Redis Alternative)
+model Job {
+  id             String    @id @default(uuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  jobType        String    // SEND_WHATSAPP, RECOVERY_TIMER, SYNC_STATUS, CLEANUP
+  payload        Json
+  status         String    @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  runAt          DateTime  @default(now())
+  processedAt    DateTime?
+  error          String?   @db.Text
+  
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, runAt])
+  @@index([merchantId])
+  @@map("storeping_Job")
+}
+
+// 5. Abandoned Cart Tracking & Recovery Funnel
+model CartRecovery {
+  id             String    @id @default(uuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  checkoutToken  String    @unique
+  shopifyCartId  String?
+  customerName   String?
+  customerPhone  String
+  cartTotal      Float
+  currency       String    @default("INR")
+  lineItems      Json      // Array of {title, image, price, quantity}
+  checkoutUrl    String    @db.Text
+  discountCode   String?
+  
+  status         String    @default("PENDING") // PENDING, SENT, RECOVERED, EXPIRED, CANCELLED
+  sequenceStep   Int       @default(0)         // 0: none, 1: 1st sent, 2: 2nd sent, etc.
+  recoveredAt    DateTime?
+  orderId        String?
+  
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([merchantId, status])
+  @@map("storeping_CartRecovery")
+}
+
+// 6. Message Audit Log & Delivery Receipts
+model MessageLog {
+  id             String    @id @default(uuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  recipientPhone String    // Masked for DPDP logs
+  customerName   String?
+  eventType      String
+  metaMessageId  String?   @unique
+  status         String    @default("SENT") // SENT, DELIVERED, READ, FAILED
+  errorMessage   String?
+  
+  createdAt      DateTime  @default(now())
+
+  @@index([merchantId, createdAt])
+  @@map("storeping_MessageLog")
+}
+
+// 7. DPDP Act 2023 Consent Audit Record
+model DPDPConsent {
+  id             String    @id @default(uuid())
+  shop           String    @unique
+  consented      Boolean   @default(true)
+  consentVersion String    @default("v1.0")
+  purposes       String    @db.Text // JSON list of consented purposes
+  ipAddress      String?
+  userAgent      String?
+  consentedAt    DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  withdrawnAt    DateTime?
+
+  @@index([shop])
+  @@map("storeping_DPDPConsent")
+}
+
+// 8. Application Logging & Audit Trail
+model Log {
+  id        String   @id @default(uuid())
+  shop      String?
+  level     String   @default("info") // info, warn, error, debug
+  message   String
+  details   String?  @db.Text
+  source    String?  // auth, webhook, queue, meta, cart, dpdp
+  createdAt DateTime @default(now())
+
+  @@index([shop])
+  @@index([level])
+  @@index([createdAt])
+  @@map("storeping_Log")
+}
