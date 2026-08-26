@@ -24,6 +24,11 @@ redirect_urls = [
 [webhooks]
 api_version = "2025-01"
 
+  [webhooks.privacy_compliance]
+  customer_data_request_url = "https://storeping.everonlab.in/webhooks/privacy"
+  customer_deletion_url = "https://storeping.everonlab.in/webhooks/privacy"
+  shop_deletion_url = "https://storeping.everonlab.in/webhooks/privacy"
+
   [[webhooks.subscriptions]]
   topics = ["app/uninstalled"]
   uri = "/webhooks/app/uninstalled"
@@ -31,21 +36,6 @@ api_version = "2025-01"
   [[webhooks.subscriptions]]
   topics = ["app/scopes_update"]
   uri = "/webhooks/app/scopes_update"
-
-  [[webhooks.subscriptions]]
-  topics = [
-    "orders/create",
-    "orders/fulfilled",
-    "fulfillments/create",
-    "fulfillments/update",
-    "checkouts/create",
-    "checkouts/update"
-  ]
-  uri = "/webhooks"
-
-  [[webhooks.subscriptions]]
-  topics = ["customers/data_request", "customers/redact", "shop/redact"]
-  uri = "/webhooks/privacy"
 
 [pos]
 embedded = false
