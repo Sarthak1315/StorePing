@@ -21,7 +21,8 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { seedDefaultTemplates } from "../utils/template.server";
 import { interpolateVariables } from "../utils/template.shared";
-import { logInfo } from "../utils/logger.server";
+import { logInfo, logError } from "../utils/logger.server";
+import { syncTemplateToMeta } from "../utils/meta-whatsapp.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -60,8 +61,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const buttonType = formData.get("buttonType") as string;
   const buttonText = formData.get("buttonText") as string;
   const buttonUrl = formData.get("buttonUrl") as string;
+  const syncToMeta = formData.get("syncToMeta") === "true";
 
-  await db.template.update({
+  const merchant = await db.merchant.findUnique({ where: { shop } });
+  if (!merchant) throw new Response("Merchant not found", { status: 404 });
+
+  const updated = await db.template.update({
     where: { id: templateId },
     data: {
       bodyText,
@@ -75,9 +80,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     },
   });
 
-  await logInfo(`Template ${templateId} updated`, { shop, source: "templates" });
+  let metaSyncResult = null;
+  let metaSyncError = null;
 
-  return json({ success: true });
+  if (syncToMeta) {
+    try {
+      metaSyncResult = await syncTemplateToMeta(merchant.id, {
+        name: `storeping_${updated.eventType.toLowerCase()}`,
+        category: updated.eventType.includes("CART") ? "MARKETING" : "UTILITY",
+        bodyText,
+        headerType,
+        headerText,
+        footerText,
+        buttonType,
+        buttonText,
+        buttonUrl,
+      });
+      await logInfo(`Template ${templateId} synced to Meta WABA`, { shop, source: "templates" });
+    } catch (err: any) {
+      metaSyncError = err.message;
+      await logError(`Meta template sync failed: ${err.message}`, { shop, source: "templates" });
+    }
+  }
+
+  return json({ success: true, metaSyncResult, metaSyncError });
 };
 
 export default function TemplatesAndSimulatorPage() {
@@ -119,7 +145,7 @@ export default function TemplatesAndSimulatorPage() {
 
   const isSaving = fetcher.state !== "idle";
 
-  const handleSave = () => {
+  const handleSave = (syncToMeta: boolean = false) => {
     if (!currentTemplate) return;
     const form = new FormData();
     form.append("templateId", currentTemplate.id);
@@ -131,6 +157,7 @@ export default function TemplatesAndSimulatorPage() {
     form.append("buttonType", buttonType);
     form.append("buttonText", buttonText);
     form.append("buttonUrl", buttonUrl);
+    form.append("syncToMeta", syncToMeta ? "true" : "false");
     fetcher.submit(form, { method: "POST" });
   };
 
@@ -138,98 +165,92 @@ export default function TemplatesAndSimulatorPage() {
   const sampleVariables = {
     customer_name: "Rahul Sharma",
     order_id: "1024",
-    order_number: "SP-1024",
-    total_amount: "1,499.00",
-    currency: merchant.currency || "₹",
-    cart_items: "Premium Wireless Earbuds (x1), Matte Case (x1)",
-    tracking_url: "https://storeping.everonlab.in/track/sample",
-    checkout_url: "https://storeping.everonlab.in/checkout/sample",
+    order_name: "#1024",
+    total_price: "₹2,499.00",
+    tracking_number: "IN9823471029",
+    tracking_url: "https://track.shiprocket.in/1024",
+    checkout_url: "https://satjewells-2.myshopify.com/checkouts/c/123",
     discount_code: "SAVE10",
-    store_name: merchant.name || "Your Store",
-    carrier: "BlueDart Express",
   };
 
-  const previewBody = interpolateVariables(bodyText, sampleVariables);
-  const previewHeader = interpolateVariables(headerText, sampleVariables);
-  const previewButtonUrl = interpolateVariables(buttonUrl, sampleVariables);
+  const simulatedBody = interpolateVariables(bodyText, sampleVariables);
+  const simulatedHeader = interpolateVariables(headerText, sampleVariables);
+
+  const availableVariables = [
+    { label: "Customer Name", key: "customer_name" },
+    { label: "Order ID", key: "order_id" },
+    { label: "Order Name", key: "order_name" },
+    { label: "Total Price", key: "total_price" },
+    { label: "Tracking Number", key: "tracking_number" },
+    { label: "Tracking URL", key: "tracking_url" },
+    { label: "Checkout URL", key: "checkout_url" },
+    { label: "Discount Code", key: "discount_code" },
+  ];
+
+  const templateOptions = [
+    { label: "🛒 Cart Recovery - Step 1 (1 Hour)", value: "CART_RECOVERY_1" },
+    { label: "🛒 Cart Recovery - Step 2 (24 Hours)", value: "CART_RECOVERY_2" },
+    { label: "🛒 Cart Recovery - Step 3 (48 Hours)", value: "CART_RECOVERY_3" },
+    { label: "📦 Order Confirmation", value: "ORDER_CONFIRMATION" },
+    { label: "🚚 Shipping & Tracking Update", value: "FULFILLMENT_UPDATE" },
+    { label: "❌ Order Cancellation", value: "ORDER_CANCELLED" },
+    { label: "💳 COD to Prepaid Conversion", value: "COD_TO_PREPAID" },
+  ];
 
   return (
     <Page
-      title="Visual Template Designer & Live Simulator"
-      subtitle="Customize WhatsApp messaging templates with dynamic variables and preview on the live phone simulator."
-      primaryAction={{
-        content: "Save Template Changes",
-        onAction: handleSave,
-        loading: isSaving,
-      }}
+      title="WhatsApp Message Templates & Live Simulator"
+      subtitle="Create, customize, and sync WhatsApp message templates directly to Meta Cloud API."
     >
-      <Layout>
-        {fetcher.data?.success && (
-          <Layout.Section>
-            <Banner title="Template Saved Successfully" tone="success" />
-          </Layout.Section>
+      <BlockStack gap="500">
+        {fetcher.data?.success && !fetcher.data?.metaSyncError && (
+          <Banner title="Template Saved Successfully" tone="success" onDismiss={() => {}}>
+            {fetcher.data?.metaSyncResult ? "Template updated in StorePing and successfully synced to Meta WhatsApp Business Account." : "Template updated in StorePing."}
+          </Banner>
         )}
 
-        {/* Template Selector Tabs */}
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h3" variant="headingSm">Select Event Trigger to Customize:</Text>
-              <InlineStack gap="200" wrap>
-                {templates.map((tpl) => (
-                  <Button
-                    key={tpl.id}
-                    variant={selectedEvent === tpl.eventType ? "primary" : "secondary"}
-                    onClick={() => handleSelectTemplate(tpl.eventType)}
-                  >
-                    {tpl.eventType === "CART_RECOVERY_1"
-                      ? "🛒 Cart Reminder (Step 1)"
-                      : tpl.eventType === "CART_RECOVERY_2"
-                      ? "🎁 Cart Discount (Step 2)"
-                      : tpl.eventType === "ORDER_CONFIRM"
-                      ? "🧾 Order Confirmation"
-                      : tpl.eventType === "ORDER_SHIPPED"
-                      ? "🚚 Order Shipped"
-                      : tpl.eventType === "ORDER_DELIVERED"
-                      ? "📦 Order Delivered"
-                      : "🔁 Win-Back Offer"}
-                  </Button>
-                ))}
-              </InlineStack>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
+        {fetcher.data?.metaSyncError && (
+          <Banner title="Meta Sync Notice" tone="warning" onDismiss={() => {}}>
+            Template saved locally, but Meta sync returned: {fetcher.data.metaSyncError}. (Make sure your WABA has template creation permissions).
+          </Banner>
+        )}
 
-        {/* Left: Visual Editor */}
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="400">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h3" variant="headingMd">Template Editor</Text>
-                <Badge tone="info">{selectedEvent}</Badge>
-              </InlineStack>
+        <Layout>
+          {/* Left Column: Template Editor */}
+          <Layout.Section>
+            <Card>
+              <BlockStack gap="400">
+                <Text as="h2" variant="headingMd">
+                  Template Configuration
+                </Text>
+                <Divider />
 
-              <Divider />
-
-              {/* Header Settings */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Select
-                  label="Header Type"
+                  label="Select Notification Event"
+                  options={templateOptions}
+                  value={selectedEvent}
+                  onChange={handleSelectTemplate}
+                />
+
+                {/* Header Configuration */}
+                <Select
+                  label="Header Type (Optional)"
                   options={[
                     { label: "None", value: "NONE" },
                     { label: "Text Header", value: "TEXT" },
                     { label: "Image Header", value: "IMAGE" },
                   ]}
                   value={headerType}
-                  onChange={(val) => setHeaderType(val)}
+                  onChange={setHeaderType}
                 />
 
                 {headerType === "TEXT" && (
                   <TextField
                     label="Header Text"
                     value={headerText}
-                    onChange={(val) => setHeaderText(val)}
+                    onChange={setHeaderText}
                     autoComplete="off"
+                    helpText="Appears bold at the top of your message. Supports variables like {{customer_name}}."
                   />
                 )}
 
@@ -237,197 +258,282 @@ export default function TemplatesAndSimulatorPage() {
                   <TextField
                     label="Header Image URL"
                     value={headerMediaUrl}
-                    onChange={(val) => setHeaderMediaUrl(val)}
-                    placeholder="https://cdn.shopify.com/..."
+                    onChange={setHeaderMediaUrl}
                     autoComplete="off"
+                    helpText="Must be a publicly accessible image URL (e.g. from Shopify Files)."
                   />
                 )}
-              </div>
 
-              {/* Dynamic Variable Pills */}
-              <BlockStack gap="200">
-                <Text as="p" variant="bodySm" fontWeight="semibold">Click to Insert Dynamic Variable:</Text>
-                <InlineStack gap="150" wrap>
-                  {[
-                    "customer_name",
-                    "order_number",
-                    "total_amount",
-                    "currency",
-                    "cart_items",
-                    "discount_code",
-                    "tracking_url",
-                    "checkout_url",
-                    "store_name",
-                  ].map((v) => (
-                    <Button key={v} size="micro" onClick={() => insertVariable(v)}>
-                      + {`{{${v}}}`}
-                    </Button>
-                  ))}
-                </InlineStack>
-              </BlockStack>
+                {/* Variable Pills */}
+                <BlockStack gap="200">
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Click to insert dynamic Shopify variable:
+                  </Text>
+                  <InlineStack gap="200" wrap>
+                    {availableVariables.map((v) => (
+                      <div
+                        key={v.key}
+                        onClick={() => insertVariable(v.key)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <Tag>{v.label}</Tag>
+                      </div>
+                    ))}
+                  </InlineStack>
+                </BlockStack>
 
-              {/* Body Text */}
-              <TextField
-                label="WhatsApp Message Body"
-                value={bodyText}
-                onChange={(val) => setBodyText(val)}
-                multiline={6}
-                autoComplete="off"
-                helpText="Use standard WhatsApp formatting: *bold*, _italic_, ~strikethrough~"
-              />
+                {/* Body Text */}
+                <TextField
+                  label="Message Body"
+                  value={bodyText}
+                  onChange={setBodyText}
+                  multiline={5}
+                  autoComplete="off"
+                  helpText="Use {{variable_name}} for dynamic store data."
+                />
 
-              {/* Footer Text */}
-              <TextField
-                label="Footer Note"
-                value={footerText}
-                onChange={(val) => setFooterText(val)}
-                autoComplete="off"
-              />
+                {/* Footer Text */}
+                <TextField
+                  label="Footer Text (Optional)"
+                  value={footerText}
+                  onChange={setFooterText}
+                  autoComplete="off"
+                  helpText="Small muted text at the bottom. E.g., 'Reply STOP to unsubscribe'."
+                />
 
-              {/* Action Button */}
-              <Divider />
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Button Action Configuration */}
                 <Select
-                  label="Button Type"
+                  label="Interactive Button"
                   options={[
                     { label: "None", value: "NONE" },
-                    { label: "Call to Action URL Button", value: "CTA_URL" },
-                    { label: "Quick Reply Button", value: "QUICK_REPLY" },
+                    { label: "Quick Reply Button (Opt-out / Support)", value: "QUICK_REPLY" },
+                    { label: "Call to Action URL Button (Checkout / Tracking)", value: "CTA_URL" },
                   ]}
                   value={buttonType}
-                  onChange={(val) => setButtonType(val)}
+                  onChange={setButtonType}
                 />
 
                 {buttonType !== "NONE" && (
                   <TextField
-                    label="Button Text"
+                    label="Button Label"
                     value={buttonText}
-                    onChange={(val) => setButtonText(val)}
+                    onChange={setButtonText}
                     autoComplete="off"
                   />
                 )}
 
                 {buttonType === "CTA_URL" && (
                   <TextField
-                    label="Button URL / Variable"
+                    label="Button Destination URL"
                     value={buttonUrl}
-                    onChange={(val) => setButtonUrl(val)}
-                    placeholder="{{checkout_url}}"
+                    onChange={setButtonUrl}
                     autoComplete="off"
+                    helpText="Supports {{checkout_url}} or {{tracking_url}}."
                   />
                 )}
-              </div>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
 
-        {/* Right: Live WhatsApp Phone Simulator */}
-        <Layout.Section variant="oneThird">
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h3" variant="headingMd">📱 Live Phone Simulator</Text>
-              <Text as="p" variant="bodySm" tone="subdued">Realistic preview of how this message looks on WhatsApp.</Text>
+                <InlineStack gap="300" align="end">
+                  <Button onClick={() => handleSave(false)} loading={isSaving}>
+                    Save in StorePing
+                  </Button>
+                  <Button variant="primary" onClick={() => handleSave(true)} loading={isSaving}>
+                    ⚡ Save & Sync to Meta WhatsApp
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
 
-              <Divider />
+          {/* Right Column: Realistic WhatsApp Phone Mockup Simulator */}
+          <Layout.Section variant="oneThird">
+            <Card>
+              <BlockStack gap="400">
+                <InlineStack align="space-between">
+                  <Text as="h2" variant="headingMd">
+                    Live Phone Simulator
+                  </Text>
+                  <Badge tone="success">Meta Cloud API Preview</Badge>
+                </InlineStack>
+                <Divider />
 
-              {/* Phone Frame Simulator */}
-              <div style={{
-                background: "#ECE5DD",
-                borderRadius: "24px",
-                padding: "16px 12px",
-                border: "8px solid #1f2937",
-                boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
-                minHeight: "420px",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-                fontFamily: "Helvetica, Arial, sans-serif",
-              }}>
-                {/* Header Bar */}
-                <div style={{
-                  background: "#075E54",
-                  color: "#fff",
-                  padding: "8px 12px",
-                  borderRadius: "12px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  fontSize: "13px",
-                  fontWeight: "bold",
-                }}>
-                  <span>🟢</span>
-                  <span>{merchant.name || "StorePing Store"}</span>
-                  <span style={{ fontSize: "10px", marginLeft: "auto", color: "#25D366" }}>✓ Business</span>
-                </div>
-
-                {/* WhatsApp Chat Bubble */}
-                <div style={{
-                  background: "#ffffff",
-                  borderRadius: "8px 8px 8px 0px",
-                  padding: "10px 12px",
-                  marginBlock: "14px",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
-                  fontSize: "13px",
-                  color: "#111827",
-                  lineHeight: "1.5",
-                  wordBreak: "break-word",
-                }}>
-                  {/* Header Image or Text */}
-                  {headerType === "IMAGE" && (headerMediaUrl || currentTemplate?.headerMediaUrl) && (
-                    <img
-                      src={headerMediaUrl || currentTemplate?.headerMediaUrl || ""}
-                      alt="Header"
-                      style={{ width: "100%", height: "110px", objectFit: "cover", borderRadius: "6px", marginBottom: "8px" }}
-                    />
-                  )}
-
-                  {headerType === "TEXT" && previewHeader && (
-                    <div style={{ fontWeight: "bold", fontSize: "14px", marginBottom: "6px", color: "#075E54" }}>
-                      {previewHeader}
+                {/* WhatsApp Phone Mockup Container */}
+                <Box
+                  background="bg-surface-secondary"
+                  padding="400"
+                  borderRadius="300"
+                  borderWidth="025"
+                  borderColor="border"
+                >
+                  {/* Phone Header Bar */}
+                  <div
+                    style={{
+                      backgroundColor: "#075e54",
+                      color: "#ffffff",
+                      padding: "10px 14px",
+                      borderRadius: "8px 8px 0 0",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "32px",
+                        height: "32px",
+                        borderRadius: "50%",
+                        backgroundColor: "#128c7e",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontWeight: "bold",
+                        fontSize: "14px",
+                      }}
+                    >
+                      {merchant.shop.charAt(0).toUpperCase()}
                     </div>
-                  )}
-
-                  {/* Body Text */}
-                  <div style={{ whiteSpace: "pre-wrap" }}>
-                    {previewBody || "Start typing your template body..."}
-                  </div>
-
-                  {/* Footer */}
-                  {footerText && (
-                    <div style={{ fontSize: "10px", color: "#6B7280", marginTop: "6px" }}>
-                      {footerText}
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: "14px" }}>
+                        {merchant.displayPhoneNumber || merchant.shop}
+                      </div>
+                      <div style={{ fontSize: "10px", opacity: 0.8 }}>
+                        Official Business Account ✓
+                      </div>
                     </div>
-                  )}
-
-                  {/* Timestamp & Double Checkmarks */}
-                  <div style={{ textAlign: "right", fontSize: "10px", color: "#9CA3AF", marginTop: "4px" }}>
-                    10:45 AM <span style={{ color: "#34B7F1", fontWeight: "bold" }}>✓✓</span>
                   </div>
-                </div>
 
-                {/* WhatsApp Interactive Button */}
-                {buttonType !== "NONE" && buttonText && (
-                  <div style={{
-                    background: "#ffffff",
-                    border: "1px solid #E5E7EB",
-                    borderRadius: "8px",
-                    padding: "10px",
-                    textAlign: "center",
-                    color: "#00A884",
-                    fontWeight: "bold",
-                    fontSize: "13px",
-                    cursor: "pointer",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
-                  }}>
-                    {buttonType === "CTA_URL" ? "🔗 " : "💬 "}
-                    {buttonText}
+                  {/* Chat Background & Bubble */}
+                  <div
+                    style={{
+                      backgroundColor: "#efeae2",
+                      padding: "16px 12px",
+                      minHeight: "360px",
+                      borderRadius: "0 0 8px 8px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "flex-start",
+                    }}
+                  >
+                    <div
+                      style={{
+                        backgroundColor: "#ffffff",
+                        borderRadius: "8px",
+                        padding: "10px 12px",
+                        maxWidth: "92%",
+                        boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                        alignSelf: "flex-start",
+                      }}
+                    >
+                      {/* Message Header (Text or Image) */}
+                      {headerType === "TEXT" && simulatedHeader && (
+                        <div
+                          style={{
+                            fontWeight: "bold",
+                            fontSize: "13px",
+                            marginBottom: "6px",
+                            color: "#111827",
+                          }}
+                        >
+                          {simulatedHeader}
+                        </div>
+                      )}
+
+                      {headerType === "IMAGE" && (
+                        <div
+                          style={{
+                            backgroundColor: "#e2e8f0",
+                            borderRadius: "6px",
+                            height: "120px",
+                            marginBottom: "8px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: "#64748b",
+                            fontSize: "12px",
+                            overflow: "hidden",
+                          }}
+                        >
+                          {headerMediaUrl ? (
+                            <img
+                              src={headerMediaUrl}
+                              alt="Header Preview"
+                              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                            />
+                          ) : (
+                            "🖼️ Image Preview"
+                          )}
+                        </div>
+                      )}
+
+                      {/* Message Body */}
+                      <div
+                        style={{
+                          fontSize: "13px",
+                          lineHeight: "1.45",
+                          color: "#334155",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {simulatedBody || "Your message body will appear here..."}
+                      </div>
+
+                      {/* Message Footer */}
+                      {footerText && (
+                        <div
+                          style={{
+                            fontSize: "11px",
+                            color: "#94a3b8",
+                            marginTop: "6px",
+                          }}
+                        >
+                          {footerText}
+                        </div>
+                      )}
+
+                      {/* Timestamp & Delivered Double Checkmark */}
+                      <div
+                        style={{
+                          textAlign: "right",
+                          fontSize: "10px",
+                          color: "#94a3b8",
+                          marginTop: "4px",
+                        }}
+                      >
+                        12:30 PM <span style={{ color: "#34b7f1" }}>✓✓</span>
+                      </div>
+                    </div>
+
+                    {/* Interactive Button */}
+                    {buttonType !== "NONE" && buttonText && (
+                      <div
+                        style={{
+                          backgroundColor: "#ffffff",
+                          borderRadius: "8px",
+                          marginTop: "4px",
+                          padding: "8px",
+                          textAlign: "center",
+                          color: "#00a884",
+                          fontWeight: 600,
+                          fontSize: "13px",
+                          boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                          maxWidth: "92%",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "6px",
+                        }}
+                      >
+                        {buttonType === "CTA_URL" ? "🔗" : "💬"} {buttonText}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
-      </Layout>
+                </Box>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+        </Layout>
+      </BlockStack>
     </Page>
   );
 }

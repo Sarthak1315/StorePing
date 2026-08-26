@@ -43,6 +43,91 @@ export async function registerPhoneNumber(phoneNumberId: string, accessToken: st
   return data;
 }
 
+/**
+ * Programmatically creates or syncs a WhatsApp Message Template to Meta WABA.
+ * Supports UTILITY (Free within 24h) and MARKETING categories.
+ */
+export async function syncTemplateToMeta(merchantId: string, template: {
+  name: string;
+  category: "UTILITY" | "MARKETING" | "AUTHENTICATION";
+  language?: string;
+  bodyText: string;
+  headerType?: string | null;
+  headerText?: string | null;
+  footerText?: string | null;
+  buttonType?: string | null;
+  buttonText?: string | null;
+  buttonUrl?: string | null;
+}) {
+  const merchant = await db.merchant.findUnique({ where: { id: merchantId } });
+  if (!merchant || !merchant.wabaId || !merchant.waAccessToken) {
+    throw new Error("Merchant WhatsApp credentials missing.");
+  }
+
+  const plainAccessToken = decryptToken(merchant.waAccessToken);
+  const appSecretProof = generateAppSecretProof(plainAccessToken);
+
+  const components: any[] = [];
+
+  if (template.headerType === "TEXT" && template.headerText) {
+    components.push({
+      type: "HEADER",
+      format: "TEXT",
+      text: template.headerText,
+    });
+  }
+
+  components.push({
+    type: "BODY",
+    text: template.bodyText,
+  });
+
+  if (template.footerText) {
+    components.push({
+      type: "FOOTER",
+      text: template.footerText,
+    });
+  }
+
+  if (template.buttonType === "CTA_URL" && template.buttonText && template.buttonUrl) {
+    components.push({
+      type: "BUTTONS",
+      buttons: [
+        {
+          type: "URL",
+          text: template.buttonText.slice(0, 25),
+          url: template.buttonUrl,
+        },
+      ],
+    });
+  }
+
+  const payload = {
+    name: template.name.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+    category: template.category || "UTILITY",
+    language: template.language || "en_US",
+    components,
+  };
+
+  const endpoint = `${META_BASE_URL}/${merchant.wabaId}/message_templates?appsecret_proof=${appSecretProof}`;
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${plainAccessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = (await res.json()) as any;
+  if (!res.ok || data.error) {
+    throw new Error(data.error?.message || "Failed to create template on Meta.");
+  }
+
+  return data;
+}
+
 export interface SendWhatsAppMessageOptions {
   merchantId: string;
   recipientPhone: string;
@@ -58,11 +143,13 @@ export interface SendWhatsAppMessageOptions {
   buttonType?: string | null;
   buttonText?: string | null;
   buttonUrl?: string | null;
+  isInsideCSW?: boolean;
 }
 
 /**
  * Sends an outbound WhatsApp message via Meta Cloud API using the merchant's connected WABA & Phone Number.
- * Automatically handles #133010 registration, templates, limits, and payment error detection.
+ * Priority 1: Free-form non-template messages (100% Free inside Customer Service Window).
+ * Priority 2: Pre-approved templates / Utility templates.
  */
 export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
   const {
@@ -151,6 +238,7 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       },
     };
   } else {
+    // Non-template Freeform text (100% Free inside Customer Service Window!)
     payload = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
@@ -194,8 +282,8 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       }
     }
 
-    // Auto-Recovery 2: If outside 24h window (#131047) or freeform text rejected, fallback to pre-approved hello_world template
-    if (!ok && (data.error?.code === 131047 || data.error?.code === 132000 || data.error?.code === 132001 || !templateName)) {
+    // Auto-Recovery 2: If outside 24h window (#131047) and freeform text was rejected, fallback to pre-approved template
+    if (!ok && (data.error?.code === 131047 || data.error?.code === 132000 || data.error?.code === 132001) && !templateName) {
       const templateFallbackPayload = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
@@ -225,7 +313,6 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
         details: { errorCode, errorSubcode, recipient: maskPhoneNumber(recipientPhone) },
       });
 
-      // Handle Meta Messaging Limits & Payment Required Errors
       let detectedAlert: string | null = null;
       let alertMsg: string | null = null;
 
@@ -247,7 +334,6 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
         });
       }
 
-      // Log failure in MessageLog
       await db.messageLog.create({
         data: {
           merchantId,
@@ -264,7 +350,6 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
 
     const messageId = data.messages?.[0]?.id;
 
-    // Increment daily sent count
     await db.merchant.update({
       where: { id: merchantId },
       data: {
@@ -272,7 +357,6 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       },
     });
 
-    // Record success in MessageLog
     await db.messageLog.create({
       data: {
         merchantId,
