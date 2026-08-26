@@ -1,11 +1,31 @@
-import type { ActionFunctionArgs } from "@remix-run/node";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { enqueueJob, cancelCartRecoveryJobs, processPendingJobs } from "../utils/queue.server";
 import { normalizePhoneNumber } from "../utils/phone.utils";
 import { logInfo, logWarn } from "../utils/logger.server";
+import { action as metaAction, loader as metaLoader } from "./api.meta.webhook";
 
-export const action = async ({ request }: ActionFunctionArgs) => {
+/**
+ * Handles Meta Webhook Verification Handshake if Meta developer portal is pointed to /webhooks
+ */
+export const loader = async (args: LoaderFunctionArgs) => {
+  const url = new URL(args.request.url);
+  if (url.searchParams.get("hub.mode") || url.searchParams.get("hub.verify_token")) {
+    return metaLoader(args);
+  }
+  return new Response("Webhook endpoint ready", { status: 200 });
+};
+
+export const action = async (args: ActionFunctionArgs) => {
+  const { request } = args;
+
+  // Check if incoming request is from Meta WhatsApp Cloud API
+  const isShopify = request.headers.get("X-Shopify-Topic") || request.headers.get("X-Shopify-Hmac-Sha256");
+  if (!isShopify) {
+    return metaAction(args);
+  }
+
   const { topic, shop, payload } = await authenticate.webhook(request);
 
   const merchant = await db.merchant.findUnique({
