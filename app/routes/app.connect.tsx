@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useFetcher, useLoaderData, useSearchParams } from "@remix-run/react";
+import { useFetcher, useLoaderData, useSearchParams, useNavigate } from "@remix-run/react";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import {
   Page,
@@ -76,6 +76,7 @@ export default function ConnectWhatsAppPage() {
   const loaderData = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   const [isConnected, setIsConnected] = useState(loaderData.isWhatsAppConnected);
   const isDisconnecting = fetcher.state !== "idle";
@@ -85,7 +86,7 @@ export default function ConnectWhatsAppPage() {
 
   const oauthUrl = `/auth/facebook?shop=${encodeURIComponent(loaderData.shop)}`;
 
-  const handleOpenOAuthPopup = () => {
+  const handleConnectInMainTab = () => {
     const width = 600;
     const height = 750;
     const left = window.screen.width / 2 - width / 2;
@@ -97,8 +98,8 @@ export default function ConnectWhatsAppPage() {
       `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=no`
     );
 
+    // If popup was blocked or closed, allow standard navigation
     if (!popup || popup.closed || typeof popup.closed === "undefined") {
-      // If popup was blocked by browser, redirect top-level
       window.top?.location?.assign(oauthUrl);
     }
   };
@@ -180,7 +181,7 @@ export default function ConnectWhatsAppPage() {
                     <Button
                       variant="primary"
                       size="large"
-                      onClick={handleOpenOAuthPopup}
+                      onClick={handleConnectInMainTab}
                     >
                       Connect WhatsApp via Facebook
                     </Button>

@@ -1,5 +1,4 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { redirect } from "@remix-run/node";
 import db from "../db.server";
 import { encryptToken } from "../utils/encryption.server";
 import { logInfo, logError, logWarn } from "../utils/logger.server";
@@ -15,7 +14,7 @@ async function discoverWabaCredentials(accessToken: string, appId: string, appSe
 
   let wabaIds: string[] = [];
 
-  // Strategy 1: Inspect token via /debug_token to extract shared WABA target_ids (Official WhatsApp standard)
+  // Strategy 1: Inspect token via /debug_token to extract shared WABA target_ids
   try {
     const debugRes = await fetch(`${BASE}/debug_token?input_token=${accessToken}&${appAuth}`);
     const debugData = (await debugRes.json()) as any;
@@ -69,7 +68,7 @@ async function discoverWabaCredentials(accessToken: string, appId: string, appSe
   // Remove duplicates
   wabaIds = Array.from(new Set(wabaIds));
 
-  // Now retrieve phone numbers for each discovered WABA
+  // Retrieve phone numbers for each discovered WABA
   for (const wabaId of wabaIds) {
     try {
       const phoneRes = await fetch(
@@ -104,6 +103,47 @@ async function discoverWabaCredentials(accessToken: string, appId: string, appSe
   throw new Error("No WhatsApp Business Account or Phone Number found. Please ensure you selected your WhatsApp Account during Facebook login.");
 }
 
+function renderClosePopupOrRedirectHtml(targetUrl: string) {
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Connecting WhatsApp...</title>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; }
+    .card { text-align: center; padding: 2rem; background: #1e293b; border-radius: 1rem; border: 1px solid #334155; }
+    .spinner { border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid #10b981; border-radius: 50%; width: 36px; height: 36px; animation: spin 0.8s linear infinite; margin: 0 auto 1rem; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h3>Connecting to Shopify...</h3>
+    <p style="color: #94a3b8; font-size: 0.875rem;">Redirecting you back to StorePing...</p>
+  </div>
+  <script>
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.location.href = "${targetUrl}";
+        window.close();
+      } else if (window.top) {
+        window.top.location.href = "${targetUrl}";
+      } else {
+        window.location.href = "${targetUrl}";
+      }
+    } catch (e) {
+      window.location.href = "${targetUrl}";
+    }
+  </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
@@ -120,7 +160,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       source: "auth.facebook.callback",
       details: { error, errorDescription },
     });
-    return redirect(`https://${shop}/admin/apps/${apiKey}/app/connect?error=${encodeURIComponent(errorDescription || error || "cancelled")}`);
+    const failUrl = `https://${shop}/admin/apps/${apiKey}/app/connect?error=${encodeURIComponent(errorDescription || error || "cancelled")}`;
+    return renderClosePopupOrRedirectHtml(failUrl);
   }
 
   try {
@@ -133,7 +174,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const redirectUri = `${appUrl}/auth/facebook/callback`;
 
-    // 1. Exchange auth code for long-lived access token
+    // 1. Exchange auth code for access token
     const tokenUrl = `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${code}&redirect_uri=${encodeURIComponent(redirectUri)}`;
     const tokenRes = await fetch(tokenUrl);
     const tokenData = (await tokenRes.json()) as any;
@@ -182,12 +223,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       details: { wabaId: discovered.wabaId, phoneNumberId: discovered.phoneNumberId },
     });
 
-    return redirect(`https://${shop}/admin/apps/${apiKey}/app/connect?connected=true`);
+    const successUrl = `https://${shop}/admin/apps/${apiKey}/app/connect?connected=true`;
+    return renderClosePopupOrRedirectHtml(successUrl);
   } catch (err: any) {
     await logError(`Meta WhatsApp callback error: ${err.message}`, {
       shop,
       source: "auth.facebook.callback",
     });
-    return redirect(`https://${shop}/admin/apps/${apiKey}/app/connect?error=${encodeURIComponent(err.message)}`);
+    const errUrl = `https://${shop}/admin/apps/${apiKey}/app/connect?error=${encodeURIComponent(err.message)}`;
+    return renderClosePopupOrRedirectHtml(errUrl);
   }
 };
