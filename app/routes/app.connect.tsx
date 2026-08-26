@@ -203,7 +203,7 @@ export default function ConnectWhatsAppPage() {
           </Banner>
         )}
 
-        {errorParam && (
+        {!isConnected && errorParam && (
           <Banner title="Connection Notice" tone="warning">
             <p>{decodeURIComponent(errorParam)}</p>
           </Banner>

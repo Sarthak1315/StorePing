@@ -4,8 +4,8 @@ import { encryptToken } from "../utils/encryption.server";
 import { logInfo, logError, logWarn } from "../utils/logger.server";
 
 /**
- * Robust WABA and Phone discovery using Meta Graph API v21.0.
- * Uses /debug_token granular scopes (doesn't require business_management permission).
+ * Universal WABA and Phone discovery using Meta Graph API v21.0.
+ * Covers Embedded Signup, User Tokens, System User Tokens, and Business Portfolios.
  */
 async function discoverWabaCredentials(accessToken: string, appId: string, appSecret: string) {
   const BASE = "https://graph.facebook.com/v21.0";
@@ -14,7 +14,30 @@ async function discoverWabaCredentials(accessToken: string, appId: string, appSe
 
   let wabaIds: string[] = [];
 
-  // Strategy 1: Inspect token via /debug_token to extract shared WABA target_ids
+  // Strategy 1: Direct /me/whatsapp_business_accounts
+  try {
+    const meWabaRes = await fetch(`${BASE}/me/whatsapp_business_accounts?fields=id,name,phone_numbers{id,display_phone_number,verified_name,status,quality_rating,messaging_limit_tier}&${auth}`);
+    const meWabaData = (await meWabaRes.json()) as any;
+    if (meWabaData?.data && Array.isArray(meWabaData.data)) {
+      for (const w of meWabaData.data) {
+        if (w.id) wabaIds.push(w.id);
+        if (w.phone_numbers?.data?.length > 0) {
+          const p = w.phone_numbers.data[0];
+          return {
+            wabaId: w.id,
+            phoneNumberId: p.id,
+            displayPhoneNumber: p.display_phone_number || null,
+            qualityRating: p.quality_rating || "UNKNOWN",
+            messagingLimit: p.messaging_limit_tier || "TIER_250",
+          };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Direct /me/whatsapp_business_accounts check error:", e);
+  }
+
+  // Strategy 2: /debug_token granular scopes (WhatsApp Embedded Signup standard)
   try {
     const debugRes = await fetch(`${BASE}/debug_token?input_token=${accessToken}&${appAuth}`);
     const debugData = (await debugRes.json()) as any;
@@ -35,37 +58,44 @@ async function discoverWabaCredentials(accessToken: string, appId: string, appSe
     console.warn("debug_token check failed, continuing to fallback", e);
   }
 
-  // Strategy 2: Query /me/businesses (if business_management permission exists)
-  if (wabaIds.length === 0) {
-    try {
-      const bizRes = await fetch(`${BASE}/me/businesses?fields=id,name&${auth}`);
-      const bizData = (await bizRes.json()) as any;
-      const businesses: any[] = bizData.data || [];
+  // Strategy 3: /me/assigned_whatsapp_business_accounts
+  try {
+    const assignedRes = await fetch(`${BASE}/me/assigned_whatsapp_business_accounts?fields=id,name&${auth}`);
+    const assignedData = (await assignedRes.json()) as any;
+    if (assignedData?.data && Array.isArray(assignedData.data)) {
+      for (const w of assignedData.data) {
+        if (w.id) wabaIds.push(w.id);
+      }
+    }
+  } catch {}
 
-      for (const biz of businesses) {
-        const wabaRes = await fetch(`${BASE}/${biz.id}/owned_whatsapp_business_accounts?fields=id,name&${auth}`);
-        const wabaData = (await wabaRes.json()) as any;
-        const wabas: any[] = wabaData.data || [];
-        for (const w of wabas) {
-          wabaIds.push(w.id);
+  // Strategy 4: Query /me/businesses & /me/client_whatsapp_business_accounts
+  try {
+    const bizRes = await fetch(`${BASE}/me/businesses?fields=id,name,owned_whatsapp_business_accounts{id,name}&${auth}`);
+    const bizData = (await bizRes.json()) as any;
+    if (bizData?.data && Array.isArray(bizData.data)) {
+      for (const biz of bizData.data) {
+        if (biz.owned_whatsapp_business_accounts?.data) {
+          for (const w of biz.owned_whatsapp_business_accounts.data) {
+            if (w.id) wabaIds.push(w.id);
+          }
         }
       }
-    } catch {}
-  }
+    }
+  } catch {}
 
-  // Strategy 3: Query /me/client_whatsapp_business_accounts
-  if (wabaIds.length === 0) {
-    try {
-      const clientWabaRes = await fetch(`${BASE}/me/client_whatsapp_business_accounts?fields=id,name&${auth}`);
-      const clientWabaData = (await clientWabaRes.json()) as any;
-      const wabas: any[] = clientWabaData.data || [];
-      for (const w of wabas) {
-        wabaIds.push(w.id);
+  // Strategy 5: Query /me/client_whatsapp_business_accounts
+  try {
+    const clientWabaRes = await fetch(`${BASE}/me/client_whatsapp_business_accounts?fields=id,name&${auth}`);
+    const clientWabaData = (await clientWabaRes.json()) as any;
+    if (clientWabaData?.data && Array.isArray(clientWabaData.data)) {
+      for (const w of clientWabaData.data) {
+        if (w.id) wabaIds.push(w.id);
       }
-    } catch {}
-  }
+    }
+  } catch {}
 
-  // Remove duplicates
+  // Deduplicate discovered WABA IDs
   wabaIds = Array.from(new Set(wabaIds));
 
   // Retrieve phone numbers for each discovered WABA
@@ -100,7 +130,7 @@ async function discoverWabaCredentials(accessToken: string, appId: string, appSe
     };
   }
 
-  throw new Error("No WhatsApp Business Account or Phone Number found. Please ensure you selected your WhatsApp Account during Facebook login.");
+  throw new Error("No WhatsApp Business Account found under this Facebook login. Ensure your Facebook account has admin access to your WhatsApp Business Account.");
 }
 
 function renderClosePopupOrRedirectHtml(targetUrl: string) {
@@ -185,7 +215,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const accessToken = tokenData.access_token;
 
-    // 2. Discover WABA ID and Phone Number ID without missing permission errors
+    // 2. Discover WABA ID and Phone Number ID
     const discovered = await discoverWabaCredentials(accessToken, appId, appSecret);
     const encryptedToken = encryptToken(accessToken);
 
