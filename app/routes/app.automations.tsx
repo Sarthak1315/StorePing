@@ -132,7 +132,7 @@ export default function AutomationsPage() {
                   <BlockStack gap="100">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="h3" variant="headingMd">🛒 1. Abandoned Cart Recovery Flow</Text>
-                      <Badge tone={cartRecovery ? "success" : "subdued"}>{cartRecovery ? "Active" : "Disabled"}</Badge>
+                      <Badge tone={cartRecovery ? "success" : undefined}>{cartRecovery ? "Active" : "Disabled"}</Badge>
                     </InlineStack>
                     <Text as="p" tone="subdued">
                       Sends automated multi-step reminders with direct 1-click checkout recovery links and dynamic coupons when shoppers leave items.
@@ -194,7 +194,7 @@ export default function AutomationsPage() {
                   <BlockStack gap="100">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="h3" variant="headingMd">🧾 2. Order Confirmation Flow</Text>
-                      <Badge tone={orderConfirm ? "success" : "subdued"}>{orderConfirm ? "Active" : "Disabled"}</Badge>
+                      <Badge tone={orderConfirm ? "success" : undefined}>{orderConfirm ? "Active" : "Disabled"}</Badge>
                     </InlineStack>
                     <Text as="p" tone="subdued">
                       Instantly sends a WhatsApp receipt with order number, item summary, and status link when an order is placed on storefront or created in Admin.
@@ -218,7 +218,7 @@ export default function AutomationsPage() {
                   <BlockStack gap="100">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="h3" variant="headingMd">🚚 3. Shipping & Live Tracking Flow</Text>
-                      <Badge tone={orderShipped ? "success" : "subdued"}>{orderShipped ? "Active" : "Disabled"}</Badge>
+                      <Badge tone={orderShipped ? "success" : undefined}>{orderShipped ? "Active" : "Disabled"}</Badge>
                     </InlineStack>
                     <Text as="p" tone="subdued">
                       Dispatches tracking number, courier carrier details (Shiprocket, Delhivery, BlueDart), and 1-click live tracking button on fulfillment.
@@ -242,7 +242,7 @@ export default function AutomationsPage() {
                   <BlockStack gap="100">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="h3" variant="headingMd">📦 4. Order Delivery & Review Flow</Text>
-                      <Badge tone={orderDelivered ? "success" : "subdued"}>{orderDelivered ? "Active" : "Disabled"}</Badge>
+                      <Badge tone={orderDelivered ? "success" : undefined}>{orderDelivered ? "Active" : "Disabled"}</Badge>
                     </InlineStack>
                     <Text as="p" tone="subdued">
                       Delivers a post-purchase celebration message when carrier marks package as delivered, requesting product reviews and giving VIP discounts.
@@ -266,7 +266,7 @@ export default function AutomationsPage() {
                   <BlockStack gap="100">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="h3" variant="headingMd">🎁 5. Offer & Promotion Flow</Text>
-                      <Badge tone={promotions ? "success" : "subdued"}>{promotions ? "Active" : "Disabled"}</Badge>
+                      <Badge tone={promotions ? "success" : undefined}>{promotions ? "Active" : "Disabled"}</Badge>
                     </InlineStack>
                     <Text as="p" tone="subdued">
                       Broadcast seasonal deals, festival discounts (Diwali/Eid/New Year), and flash sale notifications with customized coupon buttons.
@@ -290,7 +290,7 @@ export default function AutomationsPage() {
                   <BlockStack gap="100">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="h3" variant="headingMd">🔄 6. Customer Re-Engagement & Win-Back Flow</Text>
-                      <Badge tone={reEngagement ? "success" : "subdued"}>{reEngagement ? "Active" : "Disabled"}</Badge>
+                      <Badge tone={reEngagement ? "success" : undefined}>{reEngagement ? "Active" : "Disabled"}</Badge>
                     </InlineStack>
                     <Text as="p" tone="subdued">
                       Re-activates dormant customers who haven't placed an order in over 45 days with personalized recommendations and exclusive return gifts.
@@ -314,7 +314,7 @@ export default function AutomationsPage() {
                   <BlockStack gap="100">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="h3" variant="headingMd">💬 7. WhatsApp 2-Way Communication & Support Inbox</Text>
-                      <Badge tone={supportChat ? "success" : "subdued"}>{supportChat ? "Active" : "Disabled"}</Badge>
+                      <Badge tone={supportChat ? "success" : undefined}>{supportChat ? "Active" : "Disabled"}</Badge>
                     </InlineStack>
                     <Text as="p" tone="subdued">
                       Enables customer questions, complaints, and live order tracking inquiries to flow into your Live Inbox (`/app/inbox`) for real-time 1-click replies.

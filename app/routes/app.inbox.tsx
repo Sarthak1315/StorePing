@@ -33,12 +33,49 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const filterTab = url.searchParams.get("filter") || "all";
   const selectedPhone = url.searchParams.get("phone") || "";
 
-  const merchant = await db.merchant.findUnique({
+  let merchant = await db.merchant.findUnique({
     where: { shop },
   });
 
   if (!merchant) {
-    throw new Response("Merchant not found", { status: 404 });
+    merchant = await db.merchant.create({
+      data: {
+        shop,
+        name: shop.replace(".myshopify.com", ""),
+      },
+    });
+  }
+
+  // Seed sample conversation if table is completely empty
+  const count = await db.conversation.count({ where: { merchantId: merchant.id } });
+  if (count === 0) {
+    try {
+      const welcomeConv = await db.conversation.create({
+        data: {
+          merchantId: merchant.id,
+          customerPhone: "919374626600",
+          customerName: "Sarthak Patel",
+          lastOrderNumber: "#1001",
+          lastMessageText: "Hello! Welcome to StorePing WhatsApp Live Inbox.",
+          lastMessageAt: new Date(),
+          unreadCount: 0,
+          status: "ACTIVE",
+          cswExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        },
+      });
+
+      await db.chatMessage.create({
+        data: {
+          conversationId: welcomeConv.id,
+          sender: "BOT",
+          messageType: "TEXT",
+          bodyText: "Hello! Welcome to StorePing WhatsApp Live Inbox. All customer chats and order notifications appear here in real time.",
+          status: "DELIVERED",
+        },
+      });
+    } catch (seedErr: any) {
+      console.warn("Seeding initial conversation warning:", seedErr);
+    }
   }
 
   // Build Prisma search filter
@@ -99,7 +136,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const messageText = (formData.get("messageText") as string || "").trim();
 
     if (!customerPhone || !messageText) {
-      return json({ error: "Message text cannot be empty." }, { status: 400 });
+      return json({ success: false, error: "Message text cannot be empty.", messageId: null }, { status: 400 });
     }
 
     try {
@@ -113,14 +150,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
 
       if (!result.success) {
-        return json({ error: result.error || "Failed to send WhatsApp message" }, { status: 500 });
+        return json({ success: false, error: result.error || "Failed to send WhatsApp message", messageId: null }, { status: 500 });
       }
 
       await logInfo(`Merchant replied to customer ${customerPhone}`, { shop, source: "inbox" });
-      return json({ success: true, messageId: result.messageId });
+      return json({ success: true, error: null, messageId: result.messageId });
     } catch (err: any) {
       await logError(`Failed to send reply: ${err.message}`, { shop, source: "inbox" });
-      return json({ error: err.message }, { status: 500 });
+      return json({ success: false, error: err.message, messageId: null }, { status: 500 });
     }
   }
 
@@ -130,16 +167,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { id: conversationId },
       data: { status: "RESOLVED", unreadCount: 0 },
     });
-    return json({ success: true });
+    return json({ success: true, error: null, messageId: null });
   }
 
-  return json({ success: true });
+  return json({ success: true, error: null, messageId: null });
 };
 
 export default function WhatsAppInboxPage() {
   const { merchant, conversations, activeConversation, searchQuery, filterTab } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const actionData = fetcher.data as any;
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [localSearch, setLocalSearch] = useState(searchQuery);
@@ -153,10 +191,10 @@ export default function WhatsAppInboxPage() {
 
   // Clear reply input after successful send
   useEffect(() => {
-    if (fetcher.data?.success && fetcher.state === "idle") {
+    if (actionData?.success && fetcher.state === "idle") {
       setReplyText("");
     }
-  }, [fetcher.data, fetcher.state]);
+  }, [actionData, fetcher.state]);
 
   const handleSearchSubmit = () => {
     const params = new URLSearchParams(searchParams);
@@ -196,9 +234,9 @@ export default function WhatsAppInboxPage() {
       fullWidth
     >
       <BlockStack gap="400">
-        {fetcher.data?.error && (
+        {actionData?.error && (
           <Banner title="Failed to Send Reply" tone="critical" onDismiss={() => {}}>
-            {fetcher.data.error}
+            {actionData.error}
           </Banner>
         )}
 

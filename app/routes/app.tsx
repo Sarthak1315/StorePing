@@ -3,7 +3,16 @@ import { Link, Outlet, useLoaderData, useRouteError, isRouteErrorResponse } from
 import { boundary } from "@shopify/shopify-app-remix/server";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
-import { Page, Card, Banner, BlockStack, Text, Button } from "@shopify/polaris";
+import {
+  AppProvider as PolarisAppProvider,
+  Page,
+  Card,
+  Banner,
+  BlockStack,
+  Text,
+  Button,
+} from "@shopify/polaris";
+import polarisTranslations from "@shopify/polaris/locales/en.json";
 import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 import { authenticate } from "../shopify.server";
 
@@ -45,31 +54,34 @@ export function ErrorBoundary() {
     errorDetails = error.data?.message || "";
   } else if (error instanceof Error) {
     errorMessage = error.message;
+    errorDetails = error.stack || "";
   }
 
   return (
-    <Page title="StorePing Status">
-      <BlockStack gap="400">
-        <Banner tone="critical" title="Application Error">
-          <p>
-            StorePing encountered an issue connecting to services. If this is a database connection issue, please ensure your database is active and reachable.
-          </p>
-        </Banner>
+    <PolarisAppProvider i18n={polarisTranslations}>
+      <Page title="StorePing Status">
+        <BlockStack gap="400">
+          <Banner tone="critical" title="Application Notice">
+            <p>
+              StorePing encountered an issue. Details are shown below:
+            </p>
+          </Banner>
 
-        <Card>
-          <BlockStack gap="300">
-            <Text variant="headingMd" as="h2">Diagnostic Details</Text>
-            <Text as="p" tone="subdued">{errorMessage}</Text>
-            {errorDetails && (
-              <pre className="bg-slate-900 text-slate-200 p-4 rounded-lg text-xs overflow-x-auto">
-                {errorDetails}
-              </pre>
-            )}
-            <Button onClick={() => window.location.reload()}>Retry Connection</Button>
-          </BlockStack>
-        </Card>
-      </BlockStack>
-    </Page>
+          <Card>
+            <BlockStack gap="300">
+              <Text variant="headingMd" as="h2">Diagnostic Details</Text>
+              <Text as="p" tone="subdued">{errorMessage}</Text>
+              {errorDetails && (
+                <pre style={{ background: "#0f172a", color: "#f8fafc", padding: "16px", borderRadius: "8px", fontSize: "12px", overflowX: "auto" }}>
+                  {errorDetails}
+                </pre>
+              )}
+              <Button onClick={() => window.location.reload()}>Retry Connection</Button>
+            </BlockStack>
+          </Card>
+        </BlockStack>
+      </Page>
+    </PolarisAppProvider>
   );
 }
 

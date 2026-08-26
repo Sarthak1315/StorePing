@@ -104,12 +104,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
 
       if (!sendResult.success) {
-        return json({ success: false, testError: sendResult.error || "Failed to send test message" });
+        return json({
+          success: false,
+          testSent: false,
+          testError: sendResult.error || "Failed to send test message",
+          testPhone,
+          metaSyncResult: null,
+          metaSyncError: null,
+        });
       }
 
-      return json({ success: true, testSent: true, testPhone, messageId: sendResult.messageId });
+      return json({
+        success: true,
+        testSent: true,
+        testError: null,
+        testPhone,
+        metaSyncResult: null,
+        metaSyncError: null,
+      });
     } catch (err: any) {
-      return json({ success: false, testError: err.message });
+      return json({
+        success: false,
+        testSent: false,
+        testError: err.message,
+        testPhone,
+        metaSyncResult: null,
+        metaSyncError: null,
+      });
     }
   }
 
@@ -153,12 +174,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  return json({ success: true, metaSyncResult, metaSyncError });
+  return json({
+    success: true,
+    testSent: false,
+    testError: null,
+    testPhone: null,
+    metaSyncResult,
+    metaSyncError,
+  });
 };
 
 export default function TemplatesAndSimulatorPage() {
   const { merchant, templates } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const actionData = fetcher.data as any;
 
   const [selectedEvent, setSelectedEvent] = useState<string>(templates[0]?.eventType || "CART_RECOVERY_1");
 
@@ -272,29 +301,29 @@ export default function TemplatesAndSimulatorPage() {
       subtitle="Create, customize, and test WhatsApp message templates directly on your phone."
     >
       <BlockStack gap="500">
-        {fetcher.data?.testSent && (
+        {actionData?.testSent && (
           <Banner title="Test Message Delivered! 🚀" tone="success" onDismiss={() => {}}>
-            Live test message was successfully dispatched via Meta Cloud API to <strong>{fetcher.data.testPhone}</strong>. Check your WhatsApp!
+            Live test message was successfully dispatched via Meta Cloud API to <strong>{actionData.testPhone}</strong>. Check your WhatsApp!
           </Banner>
         )}
 
-        {fetcher.data?.testError && (
+        {actionData?.testError && (
           <Banner title="Test Message Failed" tone="critical" onDismiss={() => {}}>
-            {fetcher.data.testError}
+            {actionData.testError}
           </Banner>
         )}
 
-        {fetcher.data?.success && !fetcher.data?.testSent && !fetcher.data?.metaSyncError && (
+        {actionData?.success && !actionData?.testSent && !actionData?.metaSyncError && (
           <Banner title="Template Saved Successfully" tone="success" onDismiss={() => {}}>
-            {fetcher.data?.metaSyncResult
+            {actionData?.metaSyncResult
               ? "Template updated in StorePing and successfully synced to Meta WhatsApp Business Account."
               : "Template updated in StorePing."}
           </Banner>
         )}
 
-        {fetcher.data?.metaSyncError && (
+        {actionData?.metaSyncError && (
           <Banner title="Meta Sync Notice" tone="warning" onDismiss={() => {}}>
-            Template saved locally, but Meta sync returned: {fetcher.data.metaSyncError}. (Make sure your WABA has template creation permissions).
+            Template saved locally, but Meta sync returned: {actionData.metaSyncError}. (Make sure your WABA has template creation permissions).
           </Banner>
         )}
 
