@@ -296,6 +296,23 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     });
   }
 
+  // 1. Sliding Window Hourly Rate Limiter (200 messages / hour safe tier cap)
+  const HOURLY_LIMIT = 200;
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  const sentInLastHour = await db.messageLog.count({
+    where: {
+      merchantId,
+      createdAt: { gte: oneHourAgo },
+      status: { in: ["SENT", "DELIVERED", "READ"] },
+    },
+  });
+
+  if (sentInLastHour >= HOURLY_LIMIT) {
+    const errorMsg = `Hourly messaging limit (${HOURLY_LIMIT}/hr) reached. Message held safely to protect Meta quality score.`;
+    await logWarn(errorMsg, { shop: merchant.shop, source: "rate-limiter" });
+    return { success: false, error: errorMsg, rateLimited: true, errorCode: 130429 };
+  }
+
   // Build Meta Cloud API Payload
   let payload: any;
 
@@ -405,6 +422,16 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       if (fallbackResult.ok) {
         ok = true;
         data = fallbackResult.data;
+      }
+    }
+
+    // Auto-Recovery 3: Rate Limiting Backoff Retry (HTTP 429 or Meta Error Code 130429 / 131056)
+    if (!ok && (data.error?.code === 130429 || data.error?.code === 131056)) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const retryResult = await executeSend(payload);
+      if (retryResult.ok) {
+        ok = true;
+        data = retryResult.data;
       }
     }
 

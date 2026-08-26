@@ -185,14 +185,19 @@ export async function processPendingJobs(limit = 20) {
       });
       processedCount++;
     } else {
-      const isExhausted = job.attempts + 1 >= job.maxAttempts;
+      const isRateLimited = result.rateLimited || result.errorCode === 130429 || result.errorCode === 131056;
+      const isExhausted = job.attempts + 1 >= (isRateLimited ? 6 : job.maxAttempts);
+
+      const retryDelayMs = isRateLimited
+        ? 15 * 60 * 1000 // 15-minute rate limit cooldown
+        : 2 * (job.attempts + 1) * 60 * 1000;
+
       await db.job.update({
         where: { id: job.id },
         data: {
           status: isExhausted ? "FAILED" : "PENDING",
           error: result.error,
-          // Exponential backoff for retry (2 mins, 4 mins...)
-          runAt: isExhausted ? job.runAt : new Date(Date.now() + 2 * (job.attempts + 1) * 60 * 1000),
+          runAt: isExhausted ? job.runAt : new Date(Date.now() + retryDelayMs),
         },
       });
     }
