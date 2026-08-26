@@ -163,19 +163,10 @@ export default function ConnectWhatsAppPage() {
   const oauthUrl = `/auth/facebook?shop=${encodeURIComponent(loaderData.shop)}`;
 
   const handleConnectOAuth = () => {
-    const width = 600;
-    const height = 750;
-    const left = window.screen.width / 2 - width / 2;
-    const top = window.screen.height / 2 - height / 2;
-
-    const popup = window.open(
-      oauthUrl,
-      "MetaWhatsAppConnect",
-      `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=no`
-    );
-
-    if (!popup || popup.closed || typeof popup.closed === "undefined") {
-      window.top?.location?.assign(oauthUrl);
+    if (window.top) {
+      window.top.location.href = oauthUrl;
+    } else {
+      window.location.href = oauthUrl;
     }
   };
 
