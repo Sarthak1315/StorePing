@@ -28,7 +28,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   try {
-    const body = (await request.json()) as any;
+    const rawBody = await request.text();
+    let body: any;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return new Response("INVALID_JSON", { status: 400 });
+    }
+
+    await logInfo(`Incoming Meta Webhook POST: ${rawBody.slice(0, 300)}`, { source: "meta-webhook" });
 
     const entries = body.entry || [];
     for (const entry of entries) {
