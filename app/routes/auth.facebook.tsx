@@ -11,12 +11,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const redirectUri = `${appUrl}/auth/facebook/callback`;
 
+  // Official Meta WhatsApp Embedded Signup v4 standard
   const params = new URLSearchParams({
     client_id: appId,
     config_id: configId,
     redirect_uri: redirectUri,
     response_type: "code",
     state: shop,
+    extras: JSON.stringify({
+      version: "v4",
+      sessionInfoVersion: "2",
+    }),
   });
 
   return redirect(`https://www.facebook.com/v21.0/dialog/oauth?${params.toString()}`);

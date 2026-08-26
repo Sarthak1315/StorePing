@@ -84,17 +84,6 @@ async function discoverWabaCredentials(accessToken: string, appId: string, appSe
     }
   } catch {}
 
-  // Strategy 5: Query /me/client_whatsapp_business_accounts
-  try {
-    const clientWabaRes = await fetch(`${BASE}/me/client_whatsapp_business_accounts?fields=id,name&${auth}`);
-    const clientWabaData = (await clientWabaRes.json()) as any;
-    if (clientWabaData?.data && Array.isArray(clientWabaData.data)) {
-      for (const w of clientWabaData.data) {
-        if (w.id) wabaIds.push(w.id);
-      }
-    }
-  } catch {}
-
   // Deduplicate discovered WABA IDs
   wabaIds = Array.from(new Set(wabaIds));
 
@@ -213,7 +202,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       throw new Error(tokenData.error?.message || "Failed to exchange Meta authorization token.");
     }
 
-    const accessToken = tokenData.access_token;
+    let accessToken = tokenData.access_token;
+
+    // Exchange short token for long-lived / permanent system user token if possible
+    try {
+      const longTokenUrl = `https://graph.facebook.com/v21.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${accessToken}`;
+      const longRes = await fetch(longTokenUrl);
+      const longData = (await longRes.json()) as any;
+      if (longData.access_token) {
+        accessToken = longData.access_token;
+      }
+    } catch {}
 
     // 2. Discover WABA ID and Phone Number ID
     const discovered = await discoverWabaCredentials(accessToken, appId, appSecret);
