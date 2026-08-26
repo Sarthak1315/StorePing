@@ -33,93 +33,105 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const filterTab = url.searchParams.get("filter") || "all";
   const selectedPhone = url.searchParams.get("phone") || "";
 
-  let merchant = await db.merchant.findUnique({
-    where: { shop },
-  });
+  try {
+    let merchant = await db.merchant.findUnique({
+      where: { shop },
+    });
 
-  if (!merchant) {
-    merchant = await db.merchant.create({
-      data: {
-        shop,
-        name: shop.replace(".myshopify.com", ""),
+    if (!merchant) {
+      merchant = await db.merchant.create({
+        data: {
+          shop,
+          name: shop.replace(".myshopify.com", ""),
+        },
+      });
+    }
+
+    // Seed sample conversation if table is completely empty
+    try {
+      const count = await db.conversation.count({ where: { merchantId: merchant.id } });
+      if (count === 0) {
+        const welcomeConv = await db.conversation.create({
+          data: {
+            merchantId: merchant.id,
+            customerPhone: "919374626600",
+            customerName: "Sarthak Patel",
+            lastOrderNumber: "#1001",
+            lastMessageText: "Hello! Welcome to StorePing WhatsApp Live Inbox.",
+            lastMessageAt: new Date(),
+            unreadCount: 0,
+            status: "ACTIVE",
+            cswExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          },
+        });
+
+        await db.chatMessage.create({
+          data: {
+            conversationId: welcomeConv.id,
+            sender: "BOT",
+            messageType: "TEXT",
+            bodyText: "Hello! Welcome to StorePing WhatsApp Live Inbox. All customer chats and order notifications appear here in real time.",
+            status: "DELIVERED",
+          },
+        });
+      }
+    } catch (seedErr: any) {
+      console.warn("Seeding initial conversation notice:", seedErr);
+    }
+
+    // Build Prisma search filter
+    const whereClause: any = {
+      merchantId: merchant.id,
+    };
+
+    if (searchQuery) {
+      whereClause.OR = [
+        { customerPhone: { contains: searchQuery } },
+        { customerName: { contains: searchQuery, mode: "insensitive" } },
+        { lastOrderNumber: { contains: searchQuery, mode: "insensitive" } },
+        { lastMessageText: { contains: searchQuery, mode: "insensitive" } },
+      ];
+    }
+
+    if (filterTab === "unread") {
+      whereClause.unreadCount = { gt: 0 };
+    } else if (filterTab === "active") {
+      whereClause.status = "ACTIVE";
+    }
+
+    const conversations = await db.conversation.findMany({
+      where: whereClause,
+      orderBy: { lastMessageAt: "desc" },
+      include: {
+        messages: {
+          orderBy: { createdAt: "asc" },
+        },
       },
+      take: 50,
+    });
+
+    const activeConversation =
+      conversations.find((c) => c.customerPhone === selectedPhone) || conversations[0] || null;
+
+    return json({
+      merchant,
+      conversations,
+      activeConversation,
+      searchQuery,
+      filterTab,
+      loadError: null,
+    });
+  } catch (err: any) {
+    await logError(`Inbox loader issue: ${err.message}`, { shop, source: "inbox" });
+    return json({
+      merchant: { id: "temp", shop, isWhatsAppConnected: false, displayPhoneNumber: null },
+      conversations: [],
+      activeConversation: null,
+      searchQuery,
+      filterTab,
+      loadError: err.message,
     });
   }
-
-  // Seed sample conversation if table is completely empty
-  const count = await db.conversation.count({ where: { merchantId: merchant.id } });
-  if (count === 0) {
-    try {
-      const welcomeConv = await db.conversation.create({
-        data: {
-          merchantId: merchant.id,
-          customerPhone: "919374626600",
-          customerName: "Sarthak Patel",
-          lastOrderNumber: "#1001",
-          lastMessageText: "Hello! Welcome to StorePing WhatsApp Live Inbox.",
-          lastMessageAt: new Date(),
-          unreadCount: 0,
-          status: "ACTIVE",
-          cswExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        },
-      });
-
-      await db.chatMessage.create({
-        data: {
-          conversationId: welcomeConv.id,
-          sender: "BOT",
-          messageType: "TEXT",
-          bodyText: "Hello! Welcome to StorePing WhatsApp Live Inbox. All customer chats and order notifications appear here in real time.",
-          status: "DELIVERED",
-        },
-      });
-    } catch (seedErr: any) {
-      console.warn("Seeding initial conversation warning:", seedErr);
-    }
-  }
-
-  // Build Prisma search filter
-  const whereClause: any = {
-    merchantId: merchant.id,
-  };
-
-  if (searchQuery) {
-    whereClause.OR = [
-      { customerPhone: { contains: searchQuery } },
-      { customerName: { contains: searchQuery, mode: "insensitive" } },
-      { lastOrderNumber: { contains: searchQuery, mode: "insensitive" } },
-      { lastMessageText: { contains: searchQuery, mode: "insensitive" } },
-    ];
-  }
-
-  if (filterTab === "unread") {
-    whereClause.unreadCount = { gt: 0 };
-  } else if (filterTab === "active") {
-    whereClause.status = "ACTIVE";
-  }
-
-  const conversations = await db.conversation.findMany({
-    where: whereClause,
-    orderBy: { lastMessageAt: "desc" },
-    include: {
-      messages: {
-        orderBy: { createdAt: "asc" },
-      },
-    },
-    take: 50,
-  });
-
-  // Select active conversation
-  const activeConversation =
-    conversations.find((c) => c.customerPhone === selectedPhone) || conversations[0] || null;
-
-  return json({
-    merchant,
-    conversations,
-    activeConversation,
-    searchQuery,
-    filterTab,
-  });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -174,7 +186,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function WhatsAppInboxPage() {
-  const { merchant, conversations, activeConversation, searchQuery, filterTab } =
+  const { merchant, conversations, activeConversation, searchQuery, loadError } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const actionData = fetcher.data as any;
@@ -234,6 +246,12 @@ export default function WhatsAppInboxPage() {
       fullWidth
     >
       <BlockStack gap="400">
+        {loadError && (
+          <Banner title="Notice" tone="warning" onDismiss={() => {}}>
+            {loadError}
+          </Banner>
+        )}
+
         {actionData?.error && (
           <Banner title="Failed to Send Reply" tone="critical" onDismiss={() => {}}>
             {actionData.error}
@@ -280,7 +298,7 @@ export default function WhatsAppInboxPage() {
                     </Box>
                   ) : (
                     <BlockStack gap="100">
-                      {conversations.map((conv) => {
+                      {conversations.map((conv: any) => {
                         const isSelected = activeConversation?.id === conv.id;
                         const hasCSW =
                           conv.cswExpiresAt &&
@@ -417,7 +435,7 @@ export default function WhatsAppInboxPage() {
                     gap: "12px",
                   }}
                 >
-                  {activeConversation.messages.map((msg) => {
+                  {activeConversation.messages?.map((msg: any) => {
                     const isCustomer = msg.sender === "CUSTOMER";
                     const isMerchant = msg.sender === "MERCHANT";
 
