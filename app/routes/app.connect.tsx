@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useFetcher, useLoaderData } from "@remix-run/react";
+import { useState, useEffect } from "react";
+import { useFetcher, useLoaderData, useSearchParams } from "@remix-run/react";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import {
   Page,
@@ -12,21 +12,12 @@ import {
   BlockStack,
   InlineStack,
   Divider,
-  Spinner,
   List,
   Box,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { encryptToken } from "../utils/encryption.server";
-import { logInfo, logWarn, logError } from "../utils/logger.server";
-
-declare global {
-  interface Window {
-    FB: any;
-    fbAsyncInit: () => void;
-  }
-}
+import { logWarn } from "../utils/logger.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { session } = await authenticate.admin(request);
@@ -37,6 +28,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     select: {
       isWhatsAppConnected: true,
       phoneNumberId: true,
+      displayPhoneNumber: true,
       wabaId: true,
       qualityRating: true,
       messagingLimit: true,
@@ -47,59 +39,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
     shop,
     isWhatsAppConnected: merchant?.isWhatsAppConnected ?? false,
     phoneNumberId: merchant?.phoneNumberId ?? null,
+    displayPhoneNumber: merchant?.displayPhoneNumber ?? null,
     wabaId: merchant?.wabaId ?? null,
     qualityRating: merchant?.qualityRating ?? "UNKNOWN",
+    messagingLimit: merchant?.messagingLimit ?? "TIER_250",
     metaAppId: process.env.META_APP_ID ?? "",
     metaConfigId: process.env.META_CONFIG_ID ?? "",
-    appConnectUrl: `${process.env.SHOPIFY_APP_URL ?? ""}/app/connect`,
   });
-}
-
-/**
- * Auto-discovers WABA and Phone Number ID using Meta Graph API v21.0.
- */
-async function discoverWabaCredentials(accessToken: string) {
-  const BASE = "https://graph.facebook.com/v21.0";
-  const auth = `access_token=${accessToken}`;
-
-  const bizRes = await fetch(`${BASE}/me/businesses?fields=id,name&${auth}`);
-  const bizData = (await bizRes.json()) as any;
-
-  if (!bizRes.ok || bizData.error) {
-    throw new Error(`Meta /me/businesses error: ${bizData.error?.message || JSON.stringify(bizData)}`);
-  }
-
-  const businesses: any[] = bizData.data || [];
-  if (businesses.length === 0) {
-    throw new Error("No Meta Business Portfolio found for this account. Ensure your Facebook account has a Business Manager.");
-  }
-
-  for (const biz of businesses) {
-    const wabaRes = await fetch(`${BASE}/${biz.id}/owned_whatsapp_business_accounts?fields=id,name&${auth}`);
-    const wabaData = (await wabaRes.json()) as any;
-    const wabas: any[] = wabaData.data || [];
-
-    for (const waba of wabas) {
-      const phoneRes = await fetch(
-        `${BASE}/${waba.id}/phone_numbers?fields=id,display_phone_number,verified_name,status,quality_rating,messaging_limit_tier&${auth}`
-      );
-      const phoneData = (await phoneRes.json()) as any;
-      const phones: any[] = phoneData.data || [];
-
-      if (phones.length > 0) {
-        const phone = phones.find((p: any) => p.status === "CONNECTED" || p.status === "VERIFIED") || phones[0];
-        return {
-          wabaId: waba.id,
-          phoneNumberId: phone.id,
-          displayPhoneNumber: phone.display_phone_number || null,
-          qualityRating: phone.quality_rating || "UNKNOWN",
-          messagingLimit: phone.messaging_limit_tier || "TIER_250",
-        };
-      }
-    }
-  }
-
-  throw new Error("No WhatsApp phone number found in your Meta Business Portfolio.");
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -123,296 +69,161 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ success: true, disconnected: true });
   }
 
-  const code = formData.get("code") as string;
-  let wabaId = (formData.get("wabaId") as string) || "";
-  let phoneNumberId = (formData.get("phoneNumberId") as string) || "";
-
-  if (!code) {
-    return json({ error: "Authorization code missing from Facebook. Please retry." }, { status: 400 });
-  }
-
-  try {
-    const appId = process.env.META_APP_ID;
-    const appSecret = process.env.META_APP_SECRET;
-
-    if (!appId || !appSecret) {
-      throw new Error("META_APP_ID or META_APP_SECRET environment variables not configured.");
-    }
-
-    // 1. Exchange auth code for long-lived access token
-    const tokenUrl = `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${code}&redirect_uri=${process.env.SHOPIFY_APP_URL}/app/connect`;
-    const tokenRes = await fetch(tokenUrl);
-    const tokenData = (await tokenRes.json()) as any;
-
-    if (!tokenRes.ok || tokenData.error || !tokenData.access_token) {
-      throw new Error(tokenData.error?.message || "Failed to exchange Meta authorization token.");
-    }
-
-    const accessToken = tokenData.access_token;
-    let displayPhoneNumber: string | null = null;
-    let qualityRating = "UNKNOWN";
-    let messagingLimit = "TIER_250";
-
-    // 2. Discover or complete WABA info
-    if (!wabaId || !phoneNumberId) {
-      const discovered = await discoverWabaCredentials(accessToken);
-      wabaId = discovered.wabaId;
-      phoneNumberId = discovered.phoneNumberId;
-      displayPhoneNumber = discovered.displayPhoneNumber;
-      qualityRating = discovered.qualityRating;
-      messagingLimit = discovered.messagingLimit;
-    }
-
-    // 3. Encrypt access token at rest with AES-256-GCM
-    const encryptedToken = encryptToken(accessToken);
-
-    // 4. Save to Database
-    await db.merchant.upsert({
-      where: { shop },
-      create: {
-        shop,
-        wabaId,
-        phoneNumberId,
-        displayPhoneNumber,
-        waAccessToken: encryptedToken,
-        isWhatsAppConnected: true,
-        qualityRating,
-        messagingLimit,
-        alertType: "NONE",
-        alertMessage: null,
-      },
-      update: {
-        wabaId,
-        phoneNumberId,
-        displayPhoneNumber,
-        waAccessToken: encryptedToken,
-        isWhatsAppConnected: true,
-        qualityRating,
-        messagingLimit,
-        alertType: "NONE",
-        alertMessage: null,
-      },
-    });
-
-    await logInfo("WhatsApp Business Account connected successfully ✓", {
-      shop,
-      source: "connect",
-      details: { wabaId, phoneNumberId },
-    });
-
-    return json({ success: true, phoneNumberId });
-  } catch (err: any) {
-    await logError(`Connection action failed: ${err.message}`, { shop, source: "connect" });
-    return json({ error: err.message }, { status: 500 });
-  }
+  return json({ success: true });
 }
 
 export default function ConnectWhatsAppPage() {
   const loaderData = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const [searchParams] = useSearchParams();
 
   const [isConnected, setIsConnected] = useState(loaderData.isWhatsAppConnected);
-  const [sdkLoaded, setSdkLoaded] = useState(false);
-  const [sdkError, setSdkError] = useState(false);
+  const isDisconnecting = fetcher.state !== "idle";
 
-  const isLoading = fetcher.state !== "idle";
-  const actionData = fetcher.data;
-  const capturedWabaRef = useRef<{ phoneNumberId: string; wabaId: string } | null>(null);
+  const connectedParam = searchParams.get("connected") === "true";
+  const errorParam = searchParams.get("error");
 
-  // Initialize Facebook SDK
-  useEffect(() => {
-    if (document.getElementById("facebook-jssdk")) {
-      setSdkLoaded(true);
-      return;
-    }
+  const oauthUrl = `/auth/facebook?shop=${encodeURIComponent(loaderData.shop)}`;
 
-    window.fbAsyncInit = function () {
-      window.FB.init({
-        appId: loaderData.metaAppId,
-        autoLogAppEvents: true,
-        xfbml: true,
-        version: "v21.0",
-      });
-      setSdkLoaded(true);
-    };
+  const handleOpenOAuthPopup = () => {
+    const width = 600;
+    const height = 750;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
 
-    const script = document.createElement("script");
-    script.id = "facebook-jssdk";
-    script.src = "https://connect.facebook.net/en_US/sdk.js";
-    script.async = true;
-    script.defer = true;
-    script.onerror = () => setSdkError(true);
-    document.body.appendChild(script);
-  }, [loaderData.metaAppId]);
-
-  // Listen for Embedded Signup postMessage
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (!["https://www.facebook.com", "https://web.facebook.com"].includes(event.origin)) return;
-      try {
-        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-        if (data.type === "WA_EMBEDDED_SIGNUP") {
-          const { phone_number_id, waba_id } = data.data || {};
-          if (phone_number_id && waba_id) {
-            capturedWabaRef.current = { phoneNumberId: phone_number_id, wabaId: waba_id };
-          }
-        }
-      } catch {}
-    };
-
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
-
-  // Launch Embedded Signup
-  const handleConnect = useCallback(() => {
-    if (!sdkLoaded || !window.FB) {
-      alert("Facebook SDK is still initializing. Please wait a second.");
-      return;
-    }
-
-    capturedWabaRef.current = null;
-
-    window.FB.login(
-      (response: any) => {
-        if (!response.authResponse?.code) return;
-
-        const form = new FormData();
-        form.append("code", response.authResponse.code);
-
-        if (capturedWabaRef.current) {
-          form.append("wabaId", capturedWabaRef.current.wabaId);
-          form.append("phoneNumberId", capturedWabaRef.current.phoneNumberId);
-        }
-
-        fetcher.submit(form, { method: "POST" });
-      },
-      {
-        config_id: loaderData.metaConfigId,
-        response_type: "code",
-        override_default_response_type: true,
-        extras: {
-          setup: {},
-          featureType: "",
-          sessionInfoVersion: "2",
-        },
-      }
+    const popup = window.open(
+      oauthUrl,
+      "MetaWhatsAppConnect",
+      `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=no`
     );
-  }, [sdkLoaded, fetcher, loaderData.metaConfigId]);
+
+    if (!popup || popup.closed || typeof popup.closed === "undefined") {
+      // If popup was blocked by browser, redirect top-level
+      window.top?.location?.assign(oauthUrl);
+    }
+  };
 
   useEffect(() => {
-    if (actionData && "success" in actionData) {
-      if (actionData.disconnected) {
-        setIsConnected(false);
-      } else {
-        setIsConnected(true);
-      }
+    if (connectedParam) {
+      setIsConnected(true);
     }
-  }, [actionData]);
+  }, [connectedParam]);
+
+  useEffect(() => {
+    if (fetcher.data && (fetcher.data as any).disconnected) {
+      setIsConnected(false);
+    }
+  }, [fetcher.data]);
 
   return (
     <Page
       title="Connect WhatsApp Business"
       subtitle="Connect your Meta / Facebook Business Portfolio to enable automated WhatsApp customer alerts."
     >
-      <Layout>
-        {actionData && "error" in actionData && (
-          <Layout.Section>
-            <Banner title="Connection Failed" tone="critical">
-              <Text as="p">{actionData.error}</Text>
-            </Banner>
-          </Layout.Section>
+      <BlockStack gap="400">
+        {errorParam && (
+          <Banner title="Connection Notice" tone="warning">
+            <p>{decodeURIComponent(errorParam)}</p>
+          </Banner>
         )}
 
-        {isConnected && (
-          <Layout.Section>
-            <Banner title="WhatsApp Business Connected!" tone="success">
-              <Text as="p">
-                Your WhatsApp Business Account is actively connected. Outbound automated order notifications, shipping alerts, and abandoned cart recoveries are now live!
-              </Text>
-            </Banner>
-          </Layout.Section>
+        {(isConnected || connectedParam) && (
+          <Banner title="WhatsApp Business Connected!" tone="success">
+            <p>
+              Your WhatsApp Business Account is actively connected. Outbound automated order notifications, shipping tracking, and abandoned cart recoveries are live!
+            </p>
+          </Banner>
         )}
 
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="400">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h2" variant="headingMd">
-                  Meta WhatsApp Business Account (WABA)
-                </Text>
-                <InlineStack gap="200" blockAlign="center">
-                  {isLoading && <Spinner size="small" />}
+        <Layout>
+          <Layout.Section>
+            <Card>
+              <BlockStack gap="400">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h2" variant="headingMd">
+                    Meta WhatsApp Business Account (WABA)
+                  </Text>
                   <Badge tone={isConnected ? "success" : "attention"}>
                     {isConnected ? "Connected" : "Not Connected"}
                   </Badge>
                 </InlineStack>
-              </InlineStack>
 
-              <Divider />
+                <Divider />
 
-              <Text as="p" tone="subdued">
-                Click below to connect using Facebook Embedded Signup. You will be prompted to log in to your Facebook Portfolio and select your registered WhatsApp Business phone number.
-              </Text>
-
-              {isConnected && loaderData.phoneNumberId && (
-                <Box padding="300" background="bg-surface-secondary" borderRadius="200">
-                  <BlockStack gap="100">
-                    <Text as="p" variant="bodySm" fontWeight="semibold">Connected WhatsApp Number ID:</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">{loaderData.phoneNumberId}</Text>
-                  </BlockStack>
-                </Box>
-              )}
-
-              <InlineStack gap="300">
-                <Button
-                  variant="primary"
-                  size="large"
-                  onClick={handleConnect}
-                  loading={isLoading}
-                  disabled={sdkError || isConnected || (!sdkLoaded && !isConnected)}
-                >
-                  {isConnected ? "WhatsApp Connected ✓" : !sdkLoaded ? "Loading Facebook SDK..." : "Connect WhatsApp via Facebook"}
-                </Button>
+                <Text as="p" tone="subdued">
+                  Click below to connect using Meta Embedded Signup. You will log in to your Facebook Portfolio and select your registered WhatsApp Business phone number.
+                </Text>
 
                 {isConnected && (
-                  <Button
-                    variant="plain"
-                    tone="critical"
-                    onClick={() => {
-                      const form = new FormData();
-                      form.append("intent", "disconnect");
-                      fetcher.submit(form, { method: "POST" });
-                    }}
-                  >
-                    Disconnect Number
-                  </Button>
+                  <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+                    <BlockStack gap="100">
+                      <InlineStack align="space-between">
+                        <Text as="span" variant="bodySm" fontWeight="semibold">WhatsApp Phone ID:</Text>
+                        <Text as="span" variant="bodySm">{loaderData.phoneNumberId || "Active"}</Text>
+                      </InlineStack>
+                      {loaderData.displayPhoneNumber && (
+                        <InlineStack align="space-between">
+                          <Text as="span" variant="bodySm" fontWeight="semibold">Display Number:</Text>
+                          <Text as="span" variant="bodySm" tone="success">{loaderData.displayPhoneNumber}</Text>
+                        </InlineStack>
+                      )}
+                      <InlineStack align="space-between">
+                        <Text as="span" variant="bodySm" fontWeight="semibold">Messaging Tier:</Text>
+                        <Badge tone="info">{loaderData.messagingLimit || "TIER_250"}</Badge>
+                      </InlineStack>
+                    </BlockStack>
+                  </Box>
                 )}
-              </InlineStack>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
 
-        <Layout.Section variant="oneThird">
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h3" variant="headingMd">Requirements</Text>
-              <List type="bullet">
-                <List.Item>A Meta / Facebook Business Portfolio</List.Item>
-                <List.Item>A WhatsApp Business Account (WABA)</List.Item>
-                <List.Item>A phone number not registered on personal WhatsApp</List.Item>
-              </List>
+                <InlineStack gap="300">
+                  {!isConnected ? (
+                    <Button
+                      variant="primary"
+                      size="large"
+                      onClick={handleOpenOAuthPopup}
+                    >
+                      Connect WhatsApp via Facebook
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="plain"
+                      tone="critical"
+                      loading={isDisconnecting}
+                      onClick={() => {
+                        const form = new FormData();
+                        form.append("intent", "disconnect");
+                        fetcher.submit(form, { method: "POST" });
+                      }}
+                    >
+                      Disconnect WhatsApp Account
+                    </Button>
+                  )}
+                </InlineStack>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
 
-              <Divider />
+          <Layout.Section variant="oneThird">
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h3" variant="headingMd">Requirements</Text>
+                <List type="bullet">
+                  <List.Item>A Meta / Facebook Business Portfolio</List.Item>
+                  <List.Item>A WhatsApp Business Account (WABA)</List.Item>
+                  <List.Item>A phone number not registered on personal WhatsApp</List.Item>
+                </List>
 
-              <Text as="h3" variant="headingSm">Zero Developer Markups</Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                You connect directly with your own Meta account. You get 1,000 free conversations every month directly from Meta!
-              </Text>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
-      </Layout>
+                <Divider />
+
+                <Text as="h3" variant="headingSm">Zero Developer Markups</Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  You connect directly with your own Meta account. You get 1,000 free conversations every month directly from Meta!
+                </Text>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+        </Layout>
+      </BlockStack>
     </Page>
   );
 }
