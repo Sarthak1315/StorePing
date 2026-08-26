@@ -20,6 +20,7 @@ import {
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { encryptToken } from "../utils/encryption.server";
+import { subscribeWabaToWebhooks } from "../utils/meta-whatsapp.server";
 import { logInfo, logWarn, logError } from "../utils/logger.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -29,6 +30,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const merchant = await db.merchant.findUnique({
     where: { shop },
     select: {
+      id: true,
       isWhatsAppConnected: true,
       phoneNumberId: true,
       displayPhoneNumber: true,
@@ -48,6 +50,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     messagingLimit: merchant?.messagingLimit ?? "TIER_250",
     metaAppId: process.env.META_APP_ID ?? "",
     metaConfigId: process.env.META_CONFIG_ID ?? "",
+    webhookUrl: "https://storeping.everonlab.in/api/meta/webhook",
+    verifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN ?? "storeping_meta_verify_token_secure_2026",
   });
 }
 
@@ -68,15 +72,69 @@ export async function action({ request }: ActionFunctionArgs) {
         alertMessage: null,
       },
     });
-    await logWarn("Merchant disconnected WhatsApp account", { shop, source: "connect" });
+
+    await logInfo("WhatsApp disconnected by merchant", { shop, source: "connect" });
     return json({ success: true, disconnected: true });
   }
 
-  if (intent === "manual_connect") {
-    const phoneNumberId = (formData.get("phoneNumberId") as string)?.trim();
-    const wabaId = (formData.get("wabaId") as string)?.trim();
-    const displayPhoneNumber = (formData.get("displayPhoneNumber") as string)?.trim() || "+91 76239 61821";
-    const waAccessToken = (formData.get("waAccessToken") as string)?.trim();
+  if (intent === "subscribeWebhook") {
+    const merchant = await db.merchant.findUnique({ where: { shop } });
+    if (!merchant) throw new Response("Merchant not found", { status: 404 });
+    const success = await subscribeWabaToWebhooks(merchant.id);
+    return json({ webhookSubscribed: success, success: true });
+  }
+
+  if (intent === "simulateIncoming") {
+    const merchant = await db.merchant.findUnique({ where: { shop } });
+    if (!merchant) throw new Response("Merchant not found", { status: 404 });
+
+    const customerPhone = (formData.get("customerPhone") as string || "919374626600").replace(/[^0-9]/g, "");
+    const messageText = (formData.get("messageText") as string || "Hello! StorePing live chat is working perfectly.").trim();
+
+    const conv = await db.conversation.upsert({
+      where: {
+        merchantId_customerPhone: {
+          merchantId: merchant.id,
+          customerPhone,
+        },
+      },
+      create: {
+        merchantId: merchant.id,
+        customerPhone,
+        customerName: "Customer",
+        lastMessageText: messageText,
+        lastMessageAt: new Date(),
+        unreadCount: 1,
+        status: "ACTIVE",
+        cswExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+      update: {
+        lastMessageText: messageText,
+        lastMessageAt: new Date(),
+        unreadCount: { increment: 1 },
+        status: "ACTIVE",
+        cswExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
+    await db.chatMessage.create({
+      data: {
+        conversationId: conv.id,
+        sender: "CUSTOMER",
+        messageType: "TEXT",
+        bodyText: messageText,
+        status: "DELIVERED",
+      },
+    });
+
+    return json({ success: true, simulated: true });
+  }
+
+  if (intent === "connectManual") {
+    const phoneNumberId = (formData.get("phoneNumberId") as string || "").trim();
+    const wabaId = (formData.get("wabaId") as string || "").trim();
+    const displayPhoneNumber = (formData.get("displayPhoneNumber") as string || "").trim();
+    const waAccessToken = (formData.get("waAccessToken") as string || "").trim();
 
     if (!phoneNumberId || !waAccessToken) {
       return json({ error: "Phone Number ID and Access Token are required." }, { status: 400 });
@@ -84,7 +142,9 @@ export async function action({ request }: ActionFunctionArgs) {
 
     try {
       // Validate credentials by pinging Meta Graph API
-      const metaRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating,messaging_limit_tier&access_token=${waAccessToken}`);
+      const metaRes = await fetch(
+        `https://graph.facebook.com/v21.0/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating,messaging_limit_tier&access_token=${waAccessToken}`
+      );
       const metaData = (await metaRes.json()) as any;
 
       if (!metaRes.ok || metaData.error) {
@@ -97,7 +157,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
       const encryptedToken = encryptToken(waAccessToken);
 
-      await db.merchant.upsert({
+      const updatedMerchant = await db.merchant.upsert({
         where: { shop },
         create: {
           shop,
@@ -123,6 +183,9 @@ export async function action({ request }: ActionFunctionArgs) {
           alertMessage: null,
         },
       });
+
+      // Auto-subscribe WABA to Webhooks
+      await subscribeWabaToWebhooks(updatedMerchant.id);
 
       await logInfo("WhatsApp Business Account connected via Direct API Credentials ✓", {
         shop,
@@ -194,12 +257,24 @@ export default function ConnectWhatsAppPage() {
   return (
     <Page
       title="Connect WhatsApp Business"
-      subtitle="Connect your Meta / Facebook Business Portfolio to enable automated WhatsApp customer alerts."
+      subtitle="Connect your Meta / Facebook Business Portfolio to enable automated WhatsApp customer alerts & live inbox."
     >
       <BlockStack gap="400">
         {actionData?.error && (
           <Banner title="Connection Error" tone="critical">
             <p>{actionData.error}</p>
+          </Banner>
+        )}
+
+        {actionData?.webhookSubscribed && (
+          <Banner title="Meta Webhook Subscribed Successfully!" tone="success">
+            <p>Your WhatsApp Business Account (WABA) is successfully subscribed to the Meta App webhooks!</p>
+          </Banner>
+        )}
+
+        {actionData?.simulated && (
+          <Banner title="Test Customer Message Ingested!" tone="success">
+            <p>A test incoming message has been added. Check your <b>Live Inbox & Search</b> to see it live!</p>
           </Banner>
         )}
 
@@ -212,7 +287,7 @@ export default function ConnectWhatsAppPage() {
         {(isConnected || connectedParam) && (
           <Banner title="WhatsApp Business Connected!" tone="success">
             <p>
-              Your WhatsApp Business Account is actively connected. Outbound automated order notifications, shipping tracking, and abandoned cart recoveries are live!
+              Your WhatsApp Business Account is actively connected. Outbound automated order notifications, shipping tracking, and 2-way support conversations are live!
             </p>
           </Banner>
         )}
@@ -249,35 +324,52 @@ export default function ConnectWhatsAppPage() {
                           <Text as="span" variant="bodySm" tone="success">{displayPhoneNumber}</Text>
                         </InlineStack>
                         <InlineStack align="space-between">
+                          <Text as="span" variant="bodySm" fontWeight="semibold">Quality Rating:</Text>
+                          <Badge tone={loaderData.qualityRating === "GREEN" ? "success" : "warning"}>
+                            {loaderData.qualityRating}
+                          </Badge>
+                        </InlineStack>
+                        <InlineStack align="space-between">
                           <Text as="span" variant="bodySm" fontWeight="semibold">Messaging Tier:</Text>
-                          <Badge tone="info">{loaderData.messagingLimit || "TIER_250"}</Badge>
+                          <Text as="span" variant="bodySm">{loaderData.messagingLimit}</Text>
                         </InlineStack>
                       </BlockStack>
                     </Box>
 
                     <InlineStack gap="300">
                       <Button
-                        variant="plain"
-                        tone="critical"
+                        onClick={() => {
+                          const form = new FormData();
+                          form.append("intent", "subscribeWebhook");
+                          fetcher.submit(form, { method: "POST" });
+                        }}
                         loading={isSubmitting}
+                      >
+                        🔌 Register Webhook with Meta (Sync WABA)
+                      </Button>
+
+                      <Button
+                        tone="critical"
+                        variant="plain"
                         onClick={() => {
                           const form = new FormData();
                           form.append("intent", "disconnect");
                           fetcher.submit(form, { method: "POST" });
                         }}
+                        loading={isSubmitting}
                       >
-                        Disconnect WhatsApp Account
+                        Disconnect WhatsApp
                       </Button>
                     </InlineStack>
                   </BlockStack>
                 ) : (
                   <BlockStack gap="400">
                     <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
-                      <Box paddingBlockStart="300">
+                      <Box padding="300">
                         {selectedTab === 0 ? (
                           <BlockStack gap="300">
-                            <Text as="p" tone="subdued">
-                              Connect directly with your Everon Lab Phone Number ID and Access Token to start sending WhatsApp messages immediately.
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              Enter your WhatsApp Cloud API credentials from Meta Developer Portal.
                             </Text>
 
                             <TextField
@@ -285,7 +377,8 @@ export default function ConnectWhatsAppPage() {
                               value={phoneNumberId}
                               onChange={setPhoneNumberId}
                               autoComplete="off"
-                              helpText="Your Meta WhatsApp Phone Number ID (e.g. 1166112789916926)"
+                              placeholder="e.g. 1166112789916926"
+                              helpText="Found in Meta Developers ➡️ WhatsApp ➡️ API Setup"
                             />
 
                             <TextField
@@ -293,7 +386,7 @@ export default function ConnectWhatsAppPage() {
                               value={wabaId}
                               onChange={setWabaId}
                               autoComplete="off"
-                              helpText="Your Meta WABA ID (e.g. 2066881594231087)"
+                              placeholder="e.g. 2066881594231087"
                             />
 
                             <TextField
@@ -301,26 +394,25 @@ export default function ConnectWhatsAppPage() {
                               value={displayPhoneNumber}
                               onChange={setDisplayPhoneNumber}
                               autoComplete="off"
-                              helpText="e.g. +91 76239 61821"
+                              placeholder="e.g. +91 76239 61821"
                             />
 
                             <TextField
-                              label="Meta System User / Permanent Access Token"
+                              label="System User / Permanent Access Token"
+                              type="password"
                               value={waAccessToken}
                               onChange={setWaAccessToken}
-                              type="password"
                               autoComplete="off"
-                              placeholder="EAA..."
-                              helpText="From Meta Developer Dashboard (WhatsApp > API Setup) or Business Settings > System Users"
+                              placeholder="EAABw..."
+                              helpText="Access token with whatsapp_business_messaging & whatsapp_business_management permissions."
                             />
 
                             <Button
                               variant="primary"
-                              size="large"
                               loading={isSubmitting}
                               onClick={() => {
                                 const form = new FormData();
-                                form.append("intent", "manual_connect");
+                                form.append("intent", "connectManual");
                                 form.append("phoneNumberId", phoneNumberId);
                                 form.append("wabaId", wabaId);
                                 form.append("displayPhoneNumber", displayPhoneNumber);
@@ -328,20 +420,17 @@ export default function ConnectWhatsAppPage() {
                                 fetcher.submit(form, { method: "POST" });
                               }}
                             >
-                              Save & Connect WhatsApp
+                              Save & Connect WhatsApp Account
                             </Button>
                           </BlockStack>
                         ) : (
                           <BlockStack gap="300">
-                            <Text as="p" tone="subdued">
-                              Log in with your Facebook account and select your business portfolio.
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              Connect your Meta Business Account with 1-Click Embedded Signup.
                             </Text>
-                            <Button
-                              variant="primary"
-                              size="large"
-                              onClick={handleConnectOAuth}
-                            >
-                              Connect WhatsApp via Facebook
+
+                            <Button variant="primary" onClick={handleConnectOAuth}>
+                              Continue with Facebook / Meta
                             </Button>
                           </BlockStack>
                         )}
@@ -353,23 +442,58 @@ export default function ConnectWhatsAppPage() {
             </Card>
           </Layout.Section>
 
+          {/* Webhook Configuration & Verification Details */}
           <Layout.Section variant="oneThird">
             <Card>
               <BlockStack gap="300">
-                <Text as="h3" variant="headingMd">Your WhatsApp Info</Text>
+                <Text as="h3" variant="headingSm">
+                  📡 Meta Webhook Settings
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Ensure these exact values are set in Meta Developer Dashboard ➡️ WhatsApp ➡️ Configuration:
+                </Text>
+
+                <Box padding="200" background="bg-surface-secondary" borderRadius="150">
+                  <BlockStack gap="100">
+                    <Text as="span" variant="bodyXs" fontWeight="semibold">Callback URL:</Text>
+                    <Text as="span" variant="bodyXs" breakWord>{loaderData.webhookUrl}</Text>
+                  </BlockStack>
+                </Box>
+
+                <Box padding="200" background="bg-surface-secondary" borderRadius="150">
+                  <BlockStack gap="100">
+                    <Text as="span" variant="bodyXs" fontWeight="semibold">Verify Token:</Text>
+                    <Text as="span" variant="bodyXs" breakWord>{loaderData.verifyToken}</Text>
+                  </BlockStack>
+                </Box>
+
+                <Text as="p" variant="bodySm" fontWeight="semibold">
+                  Required Webhook Fields:
+                </Text>
                 <List type="bullet">
-                  <List.Item><strong>Phone ID:</strong> 1166112789916926</List.Item>
-                  <List.Item><strong>WABA ID:</strong> 2066881594231087</List.Item>
-                  <List.Item><strong>Number:</strong> +91 76239 61821</List.Item>
-                  <List.Item><strong>Portfolio:</strong> Everon Lab (Verified)</List.Item>
+                  <List.Item>✅ <code>messages</code> (Receives customer chat replies)</List.Item>
+                  <List.Item>✅ <code>message_template_status_update</code> (Template status)</List.Item>
                 </List>
 
                 <Divider />
 
-                <Text as="h3" variant="headingSm">Where to get the Token?</Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Go to <strong>developers.facebook.com</strong> → Your App → <strong>WhatsApp</strong> → <strong>API Setup</strong> and copy the Access Token.
+                <Text as="p" variant="bodyXs" tone="subdued">
+                  Click below to test how an incoming customer WhatsApp message looks in your Live Inbox.
                 </Text>
+
+                <Button
+                  size="slim"
+                  onClick={() => {
+                    const form = new FormData();
+                    form.append("intent", "simulateIncoming");
+                    form.append("customerPhone", "919374626600");
+                    form.append("messageText", "Hello! I am inquiring about my order #1001. 😊");
+                    fetcher.submit(form, { method: "POST" });
+                  }}
+                  loading={isSubmitting}
+                >
+                  🧪 Test Inbound Message Simulation
+                </Button>
               </BlockStack>
             </Card>
           </Layout.Section>
