@@ -36,6 +36,37 @@ import db from "../db.server";
 import { sendWhatsAppMessage, subscribeWabaToWebhooks } from "../utils/meta-whatsapp.server";
 import { logInfo, logError } from "../utils/logger.server";
 
+export type ChatMessageType = {
+  id: string;
+  conversationId: string;
+  sender: string;
+  messageType: string;
+  bodyText: string;
+  mediaUrl?: string | null;
+  mediaId?: string | null;
+  mimeType?: string | null;
+  caption?: string | null;
+  metaMessageId?: string | null;
+  status: string;
+  errorMessage?: string | null;
+  createdAt: Date | string;
+};
+
+export type ConversationType = {
+  id: string;
+  merchantId: string;
+  customerPhone: string;
+  customerName: string | null;
+  lastOrderNumber: string | null;
+  lastOrderId: string | null;
+  lastMessageText: string | null;
+  lastMessageAt: Date | string;
+  unreadCount: number;
+  status: string;
+  cswExpiresAt: Date | string | null;
+  messages: ChatMessageType[];
+};
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -81,7 +112,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
 
     // Fetch conversations with indexed sorting & latest messages limit
-    const conversations = await db.conversation.findMany({
+    const conversations = (await db.conversation.findMany({
       where: whereClause,
       orderBy: { lastMessageAt: "desc" },
       include: {
@@ -91,9 +122,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         },
       },
       take: 100,
-    });
+    })) as ConversationType[];
 
-    const activeConversation =
+    const activeConversation: ConversationType | null =
       conversations.find((c) => c.customerPhone === selectedPhone) || conversations[0] || null;
 
     return json({
@@ -102,17 +133,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       activeConversation,
       initialSelectedPhone: selectedPhone || activeConversation?.customerPhone || "",
       searchQuery,
-      loadError: null,
+      loadError: null as string | null,
     });
   } catch (err: any) {
     await logError(`Inbox loader error: ${err.message}`, { shop, source: "inbox" });
     return json({
-      merchant: { id: "temp", shop, isWhatsAppConnected: false, displayPhoneNumber: null },
-      conversations: [],
-      activeConversation: null,
+      merchant: { id: "temp", shop, isWhatsAppConnected: false, displayPhoneNumber: null } as any,
+      conversations: [] as ConversationType[],
+      activeConversation: null as ConversationType | null,
       initialSelectedPhone: "",
       searchQuery,
-      loadError: err.message,
+      loadError: err.message as string | null,
     });
   }
 };
@@ -266,29 +297,33 @@ export default function LiveInboxPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isSubmitting = fetcher.state !== "idle";
 
+  const conversationsList = useMemo(() => {
+    return (conversations || []) as ConversationType[];
+  }, [conversations]);
+
   // Engine 1: Instant 0ms In-Memory Keystroke Filtering
-  const filteredConversations = useMemo(() => {
-    if (!searchTerm.trim()) return conversations;
+  const filteredConversations: ConversationType[] = useMemo(() => {
+    if (!searchTerm.trim()) return conversationsList;
     const query = searchTerm.toLowerCase().trim();
     const cleanQuery = query.replace(/[^0-9]/g, "");
 
-    return conversations.filter((c) => {
+    return conversationsList.filter((c: ConversationType) => {
       const matchName = c.customerName?.toLowerCase().includes(query);
       const matchPhone = cleanQuery && c.customerPhone.includes(cleanQuery);
       const matchOrder = c.lastOrderNumber?.toLowerCase().includes(query);
       const matchText = c.lastMessageText?.toLowerCase().includes(query);
       return matchName || matchPhone || matchOrder || matchText;
     });
-  }, [conversations, searchTerm]);
+  }, [conversationsList, searchTerm]);
 
   // Derive Active Conversation in 0ms without server roundtrip
-  const activeConversation = useMemo(() => {
+  const activeConversation: ConversationType | null = useMemo(() => {
     return (
-      conversations.find((c) => c.customerPhone === selectedPhone) ||
-      conversations[0] ||
+      conversationsList.find((c: ConversationType) => c.customerPhone === selectedPhone) ||
+      conversationsList[0] ||
       null
     );
-  }, [conversations, selectedPhone]);
+  }, [conversationsList, selectedPhone]);
 
   // Keep URL in sync smoothly without triggering full reload
   const handleSelectConversation = (phone: string) => {
@@ -422,7 +457,13 @@ export default function LiveInboxPage() {
           <Layout.Section variant="oneThird">
             <Card padding="0">
               <div style={{ padding: "12px", borderBottom: "1px solid #e2e8f0" }}>
-                <InlineStack gap="200" align="space-between">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleDeepSearch();
+                  }}
+                  style={{ display: "flex", gap: "8px", width: "100%" }}
+                >
                   <div style={{ flex: 1 }}>
                     <TextField
                       label="Search conversations"
@@ -430,17 +471,16 @@ export default function LiveInboxPage() {
                       placeholder="Live search phone, name, or #1001..."
                       value={searchTerm}
                       onChange={setSearchTerm}
-                      onKeyDown={(e) => e.key === "Enter" && handleDeepSearch()}
                       prefix={<Icon source={SearchIcon} />}
                       autoComplete="off"
                       clearButton
                       onClearButtonClick={() => setSearchTerm("")}
                     />
                   </div>
-                  <Button size="slim" onClick={handleDeepSearch}>
+                  <Button size="slim" submit onClick={handleDeepSearch}>
                     Search
                   </Button>
-                </InlineStack>
+                </form>
               </div>
 
               {/* Quick Action: Start New Conversation Button */}
@@ -468,7 +508,7 @@ export default function LiveInboxPage() {
                     </BlockStack>
                   </Box>
                 ) : (
-                  filteredConversations.map((conv) => {
+                  filteredConversations.map((conv: ConversationType) => {
                     const isSelected = activeConversation?.id === conv.id;
                     const hasUnread = conv.unreadCount > 0;
                     const cswActive =
@@ -497,7 +537,9 @@ export default function LiveInboxPage() {
                         <InlineStack align="space-between" blockAlign="start">
                           <InlineStack gap="200" blockAlign="center">
                             <Avatar
-                              name={conv.customerName || conv.customerPhone}
+                              customer
+                              name={conv.customerName || "Customer"}
+                              initials={(conv.customerName ? conv.customerName.slice(0, 2).toUpperCase() : "WA")}
                               size="sm"
                             />
                             <div>
@@ -509,7 +551,7 @@ export default function LiveInboxPage() {
                                 {conv.customerName || "Customer"}
                               </Text>
                               {conv.lastOrderNumber && (
-                                <Tag size="small">{conv.lastOrderNumber}</Tag>
+                                <Tag>{conv.lastOrderNumber}</Tag>
                               )}
                             </div>
                           </InlineStack>
@@ -577,7 +619,9 @@ export default function LiveInboxPage() {
                   <InlineStack align="space-between" blockAlign="center">
                     <InlineStack gap="300" blockAlign="center">
                       <Avatar
-                        name={activeConversation.customerName || activeConversation.customerPhone}
+                        customer
+                        name={activeConversation.customerName || "Customer"}
+                        initials={(activeConversation.customerName ? activeConversation.customerName.slice(0, 2).toUpperCase() : "WA")}
                         size="md"
                       />
                       <div>
