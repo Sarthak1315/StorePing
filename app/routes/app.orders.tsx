@@ -17,13 +17,14 @@ import {
   FormLayout,
   Tabs,
   Box,
-  Tag,
+  Select,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 import { logInfo, logError } from "../utils/logger.server";
 import { normalizePhoneNumber } from "../utils/phone.utils";
+import { cancelJobById, runJobImmediately } from "../utils/queue.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
@@ -33,10 +34,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     where: { shop },
   });
 
-  // Fetch recent Shopify Orders via GraphQL
-  let orders: any[] = [];
+  let ordersList: any[] = [];
+
+  // 1. Fetch Placed/Completed Shopify Orders
   try {
-    const response = await admin.graphql(`
+    const ordersRes = await admin.graphql(`
       #graphql
       query getOrdersForWhatsApp {
         orders(first: 30, sortKey: CREATED_AT, reverse: true) {
@@ -81,43 +83,136 @@ export async function loader({ request }: LoaderFunctionArgs) {
       }
     `);
 
-    const resJson = await response.json();
-    orders = resJson.data?.orders?.edges?.map((e: any) => {
-      const node = e.node;
-      const rawPhone =
-        node.customer?.phone ||
-        node.shippingAddress?.phone ||
-        node.billingAddress?.phone ||
-        "";
-      const phone = normalizePhoneNumber(rawPhone);
-      const customerName =
-        node.customer?.firstName
-          ? `${node.customer.firstName} ${node.customer.lastName || ""}`.trim()
-          : node.shippingAddress?.name || "Customer";
+    const ordersJson = await ordersRes.json();
+    if (ordersJson.data?.orders?.edges) {
+      const fetched = ordersJson.data.orders.edges.map((e: any) => {
+        const node = e.node;
+        const rawPhone =
+          node.customer?.phone ||
+          node.shippingAddress?.phone ||
+          node.billingAddress?.phone ||
+          "";
+        const phone = normalizePhoneNumber(rawPhone);
+        const customerName =
+          node.customer?.firstName
+            ? `${node.customer.firstName} ${node.customer.lastName || ""}`.trim()
+            : node.shippingAddress?.name || "Customer";
 
-      const items = node.lineItems?.edges
-        ?.map((li: any) => `${li.node.title} (x${li.node.quantity})`)
-        .join(", ");
+        const items = node.lineItems?.edges
+          ?.map((li: any) => `${li.node.title} (x${li.node.quantity})`)
+          .join(", ");
 
-      return {
-        id: node.id,
-        orderNumber: node.name,
-        createdAt: node.createdAt,
-        total: `${node.totalPriceSet?.shopMoney?.currencyCode || "INR"} ${node.totalPriceSet?.shopMoney?.amount || "0.00"}`,
-        totalAmount: node.totalPriceSet?.shopMoney?.amount || "0.00",
-        currency: node.totalPriceSet?.shopMoney?.currencyCode || "INR",
-        financialStatus: node.displayFinancialStatus || "PAID",
-        fulfillmentStatus: node.displayFulfillmentStatus || "UNFULFILLED",
-        customerName,
-        phone,
-        items,
-      };
-    }) || [];
+        return {
+          id: node.id,
+          orderNumber: node.name,
+          createdAt: node.createdAt,
+          total: `${node.totalPriceSet?.shopMoney?.currencyCode || "INR"} ${node.totalPriceSet?.shopMoney?.amount || "0.00"}`,
+          totalAmount: node.totalPriceSet?.shopMoney?.amount || "0.00",
+          currency: node.totalPriceSet?.shopMoney?.currencyCode || "INR",
+          financialStatus: node.displayFinancialStatus || "PAID",
+          fulfillmentStatus: node.displayFulfillmentStatus || "UNFULFILLED",
+          customerName,
+          phone,
+          items,
+          isDraft: false,
+        };
+      });
+      ordersList.push(...fetched);
+    }
   } catch (err: any) {
-    console.warn("Failed to fetch Shopify orders via GraphQL:", err.message);
+    console.warn("GraphQL Orders fetch notice:", err.message);
   }
 
-  // Fetch Abandoned Carts from Database
+  // 2. Fetch Draft Orders (e.g. #D1, #D2)
+  try {
+    const draftRes = await admin.graphql(`
+      #graphql
+      query getDraftOrdersForWhatsApp {
+        draftOrders(first: 30, reverse: true) {
+          edges {
+            node {
+              id
+              name
+              createdAt
+              totalPriceSet {
+                shopMoney {
+                  amount
+                  currencyCode
+                }
+              }
+              status
+              customer {
+                firstName
+                lastName
+                phone
+                email
+              }
+              shippingAddress {
+                phone
+                name
+                city
+              }
+              billingAddress {
+                phone
+              }
+              lineItems(first: 5) {
+                edges {
+                  node {
+                    title
+                    quantity
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `);
+
+    const draftJson = await draftRes.json();
+    if (draftJson.data?.draftOrders?.edges) {
+      const fetchedDrafts = draftJson.data.draftOrders.edges.map((e: any) => {
+        const node = e.node;
+        const rawPhone =
+          node.customer?.phone ||
+          node.shippingAddress?.phone ||
+          node.billingAddress?.phone ||
+          "";
+        const phone = normalizePhoneNumber(rawPhone);
+        const customerName =
+          node.customer?.firstName
+            ? `${node.customer.firstName} ${node.customer.lastName || ""}`.trim()
+            : node.shippingAddress?.name || "Customer";
+
+        const items = node.lineItems?.edges
+          ?.map((li: any) => `${li.node.title} (x${li.node.quantity})`)
+          .join(", ");
+
+        return {
+          id: node.id,
+          orderNumber: node.name,
+          createdAt: node.createdAt,
+          total: `${node.totalPriceSet?.shopMoney?.currencyCode || "INR"} ${node.totalPriceSet?.shopMoney?.amount || "0.00"}`,
+          totalAmount: node.totalPriceSet?.shopMoney?.amount || "0.00",
+          currency: node.totalPriceSet?.shopMoney?.currencyCode || "INR",
+          financialStatus: node.status === "COMPLETED" ? "COMPLETED" : "OPEN (DRAFT)",
+          fulfillmentStatus: "DRAFT",
+          customerName,
+          phone,
+          items,
+          isDraft: true,
+        };
+      });
+      ordersList.push(...fetchedDrafts);
+    }
+  } catch (err: any) {
+    console.warn("GraphQL Draft Orders fetch notice:", err.message);
+  }
+
+  // Sort combined orders by date descending
+  ordersList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  // 3. Fetch Abandoned Carts from Database
   const abandonedCarts = merchant
     ? await db.cartRecovery.findMany({
         where: { merchantId: merchant.id },
@@ -126,13 +221,32 @@ export async function loader({ request }: LoaderFunctionArgs) {
       })
     : [];
 
+  // 4. Fetch Active Automation Jobs
+  const activeJobs = merchant
+    ? await db.job.findMany({
+        where: { merchantId: merchant.id },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      })
+    : [];
+
   return json({
     shop,
     isWhatsAppConnected: merchant?.isWhatsAppConnected ?? false,
-    orders,
+    orders: ordersList,
     abandonedCarts,
+    activeJobs,
   });
 }
+
+export type ActionData = {
+  success?: boolean;
+  error?: string;
+  phone?: string;
+  orderNumber?: string;
+  recovered?: boolean;
+  message?: string;
+};
 
 export async function action({ request }: ActionFunctionArgs) {
   const { session } = await authenticate.admin(request);
@@ -142,20 +256,20 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const merchant = await db.merchant.findUnique({ where: { shop } });
   if (!merchant || !merchant.isWhatsAppConnected) {
-    return json({ success: false, error: "WhatsApp Business Account is not connected." }, { status: 400 });
+    return json<ActionData>({ success: false, error: "WhatsApp Business Account is not connected." }, { status: 400 });
   }
 
   // 1. Manual WhatsApp Send for Order
   if (intent === "sendOrderWhatsApp") {
     const orderNumber = formData.get("orderNumber") as string;
-    const customerName = formData.get("customerName") as string || "Valued Customer";
-    const totalAmount = formData.get("totalAmount") as string || "0.00";
-    const currency = formData.get("currency") as string || "INR";
+    const customerName = (formData.get("customerName") as string) || "Valued Customer";
+    const totalAmount = (formData.get("totalAmount") as string) || "0.00";
+    const currency = (formData.get("currency") as string) || "INR";
     const eventType = (formData.get("eventType") as string) || "ORDER_CONFIRM";
-    let recipientPhone = (formData.get("phone") as string || "").trim();
+    let recipientPhone = ((formData.get("phone") as string) || "").trim();
 
     if (!recipientPhone) {
-      return json({ success: false, error: "Please provide a valid customer phone number." }, { status: 400 });
+      return json<ActionData>({ success: false, error: "Please provide a valid customer phone number." }, { status: 400 });
     }
 
     let cleanPhone = recipientPhone.replace(/[^0-9]/g, "");
@@ -183,7 +297,7 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
       if (!result.success) {
-        return json({ success: false, error: result.error || "Failed to dispatch WhatsApp message" }, { status: 500 });
+        return json<ActionData>({ success: false, error: result.error || "Failed to dispatch WhatsApp message" }, { status: 500 });
       }
 
       await logInfo(`Manual WhatsApp notification sent for order ${orderNumber} to ${cleanPhone}`, {
@@ -191,21 +305,21 @@ export async function action({ request }: ActionFunctionArgs) {
         source: "manual-order",
       });
 
-      return json({ success: true, orderNumber, phone: cleanPhone });
+      return json<ActionData>({ success: true, orderNumber, phone: cleanPhone, message: `WhatsApp message delivered to +${cleanPhone}!` });
     } catch (err: any) {
-      return json({ success: false, error: err.message }, { status: 500 });
+      return json<ActionData>({ success: false, error: err.message }, { status: 500 });
     }
   }
 
   // 2. Manual WhatsApp Send for Abandoned Cart
   if (intent === "sendCartRecovery") {
-    const customerName = formData.get("customerName") as string || "there";
-    const checkoutUrl = formData.get("checkoutUrl") as string || `https://${shop}/checkout`;
-    const discountCode = formData.get("discountCode") as string || "SAVE10";
-    let recipientPhone = (formData.get("phone") as string || "").trim();
+    const customerName = (formData.get("customerName") as string) || "there";
+    const checkoutUrl = (formData.get("checkoutUrl") as string) || `https://${shop}/checkout`;
+    const discountCode = (formData.get("discountCode") as string) || "SAVE10";
+    let recipientPhone = ((formData.get("phone") as string) || "").trim();
 
     if (!recipientPhone) {
-      return json({ success: false, error: "Please enter a valid phone number for cart recovery." }, { status: 400 });
+      return json<ActionData>({ success: false, error: "Please enter a valid phone number for cart recovery." }, { status: 400 });
     }
 
     let cleanPhone = recipientPhone.replace(/[^0-9]/g, "");
@@ -224,25 +338,31 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
       if (!result.success) {
-        return json({ success: false, error: result.error || "Failed to send cart recovery" }, { status: 500 });
+        return json<ActionData>({ success: false, error: result.error || "Failed to send cart recovery" }, { status: 500 });
       }
 
-      return json({ success: true, phone: cleanPhone, recovered: true });
+      return json<ActionData>({ success: true, phone: cleanPhone, recovered: true, message: `Cart recovery message sent to +${cleanPhone}!` });
     } catch (err: any) {
-      return json({ success: false, error: err.message }, { status: 500 });
+      return json<ActionData>({ success: false, error: err.message }, { status: 500 });
     }
   }
 
-  return json({ success: true });
-}
+  // 3. Stop/Cancel Job
+  if (intent === "cancelJob") {
+    const jobId = formData.get("jobId") as string;
+    await cancelJobById(jobId, merchant.id);
+    return json<ActionData>({ success: true, message: "Automation message stopped successfully." });
+  }
 
-export type ActionData = {
-  success?: boolean;
-  error?: string;
-  phone?: string;
-  orderNumber?: string;
-  recovered?: boolean;
-};
+  // 4. Run Job Now
+  if (intent === "runJobNow") {
+    const jobId = formData.get("jobId") as string;
+    await runJobImmediately(jobId, merchant.id);
+    return json<ActionData>({ success: true, message: "Automation message triggered immediately!" });
+  }
+
+  return json<ActionData>({ success: true });
+}
 
 export default function OrdersManualPage() {
   const { isWhatsAppConnected, orders, abandonedCarts } = useLoaderData<typeof loader>();
@@ -304,27 +424,30 @@ export default function OrdersManualPage() {
   };
 
   const tabs = [
-    { id: "orders", content: `📦 Shopify Orders (${orders.length})` },
+    { id: "orders", content: `📦 Shopify Orders & Drafts (${orders.length})` },
     { id: "carts", content: `🛒 Abandoned Checkouts (${abandonedCarts.length})` },
   ];
 
   const orderRows = orders.map((order: any) => [
-    <Text as="span" variant="bodySm" fontWeight="bold">
-      {order.orderNumber}
-    </Text>,
+    <InlineStack gap="100" blockAlign="center">
+      <Text as="span" variant="bodySm" fontWeight="bold">
+        {order.orderNumber}
+      </Text>
+      {order.isDraft && <Badge tone="info">Draft</Badge>}
+    </InlineStack>,
     <Text as="span" variant="bodySm">
       {order.customerName}
     </Text>,
     order.phone ? (
-      <Badge tone="success">{order.phone}</Badge>
+      <Badge tone="success">+{order.phone}</Badge>
     ) : (
       <Badge tone="warning">No phone attached</Badge>
     ),
     <Text as="span" variant="bodySm">
       {order.total}
     </Text>,
-    <Badge tone={order.fulfillmentStatus === "FULFILLED" ? "success" : "attention"}>
-      {order.fulfillmentStatus}
+    <Badge tone={order.financialStatus === "PAID" || order.financialStatus === "COMPLETED" ? "success" : "attention"}>
+      {order.financialStatus}
     </Badge>,
     <InlineStack gap="150">
       <Button
@@ -345,7 +468,7 @@ export default function OrdersManualPage() {
           size="slim"
           onClick={() => navigate(`/app/inbox?phone=${order.phone.replace(/[^0-9]/g, "")}`)}
         >
-          💬 Live Chat
+          💬 Chat
         </Button>
       )}
     </InlineStack>,
@@ -355,7 +478,7 @@ export default function OrdersManualPage() {
     <Text as="span" variant="bodySm" fontWeight="bold">
       {cart.customerName || "Customer"}
     </Text>,
-    <Badge tone="success">{cart.customerPhone}</Badge>,
+    <Badge tone="success">+{cart.customerPhone}</Badge>,
     <Text as="span" variant="bodySm">
       {cart.currency} {parseFloat(cart.cartTotal).toFixed(2)}
     </Text>,
@@ -371,14 +494,14 @@ export default function OrdersManualPage() {
         variant="primary"
         onClick={() => handleOpenCartModal(cart)}
       >
-        🛒 Send 1-Click Recovery
+        🛒 1-Click Recovery
       </Button>
       {cart.customerPhone && (
         <Button
           size="slim"
           onClick={() => navigate(`/app/inbox?phone=${cart.customerPhone.replace(/[^0-9]/g, "")}`)}
         >
-          💬 Live Chat
+          💬 Chat
         </Button>
       )}
     </InlineStack>,
@@ -390,9 +513,9 @@ export default function OrdersManualPage() {
       subtitle="Send 1-click WhatsApp order confirmations, delivery tracking, and abandoned cart recoveries manually or automatically."
     >
       <BlockStack gap="400">
-        {fetcher.data?.success && (
-          <Banner title="WhatsApp Message Dispatched!" tone="success">
-            <p>Your message was successfully delivered to customer WhatsApp number <b>+{fetcher.data.phone}</b>.</p>
+        {fetcher.data?.message && (
+          <Banner title="Action Successful" tone="success">
+            <p>{fetcher.data.message}</p>
           </Banner>
         )}
 
@@ -417,13 +540,13 @@ export default function OrdersManualPage() {
                     orderRows.length === 0 ? (
                       <Box padding="600">
                         <Text as="p" tone="subdued" alignment="center">
-                          No orders found in Shopify yet. Create an order or test order to see it here!
+                          No orders or draft orders found in Shopify yet.
                         </Text>
                       </Box>
                     ) : (
                       <DataTable
                         columnContentTypes={["text", "text", "text", "text", "text", "text"]}
-                        headings={["Order", "Customer", "Mobile Phone", "Total", "Status", "1-Click WhatsApp Actions"]}
+                        headings={["Order / Draft", "Customer", "Mobile Phone", "Total", "Status", "1-Click WhatsApp Actions"]}
                         rows={orderRows}
                       />
                     )
@@ -469,16 +592,26 @@ export default function OrdersManualPage() {
             <Text as="p" variant="bodySm">
               Customer: <b>{selectedOrder?.customerName}</b> • Total: <b>{selectedOrder?.total}</b>
             </Text>
+            <Select
+              label="Notification Type"
+              options={[
+                { label: "🧾 Order Confirmation", value: "ORDER_CONFIRM" },
+                { label: "🚚 Shipping & Tracking Update", value: "ORDER_SHIPPED" },
+                { label: "📦 Order Delivery & Review", value: "ORDER_DELIVERED" },
+              ]}
+              value={selectedEventType}
+              onChange={setSelectedEventType}
+            />
             <TextField
-              label="Recipient Mobile Phone"
+              label="Recipient WhatsApp Mobile Phone"
               placeholder="+91 9374626600"
               value={customPhone}
               onChange={setCustomPhone}
               autoComplete="off"
-              helpText="Enter customer WhatsApp number with country code (e.g. +91 9374626600)."
+              helpText="Auto-populated from Shopify customer/shipping address. You can also edit it before sending."
             />
             <Text as="p" variant="bodyXs" tone="subdued">
-              Message will be sent via pre-approved WhatsApp notification template.
+              Message will be sent via pre-approved WhatsApp notification template and logged in your Live Inbox.
             </Text>
           </FormLayout>
         </Modal.Section>

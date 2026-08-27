@@ -12,7 +12,7 @@ automatically_update_urls_on_dev = true
 dev_store_url = ""
 
 [access_scopes]
-scopes = "read_checkouts,read_customers,read_discounts,read_fulfillments,read_orders,read_products,write_checkouts,write_discounts,write_fulfillments,write_orders"
+scopes = "read_checkouts,read_customers,read_discounts,read_draft_orders,read_fulfillments,read_orders,read_products,write_checkouts,write_discounts,write_draft_orders,write_fulfillments,write_orders"
 
 [auth]
 redirect_urls = [

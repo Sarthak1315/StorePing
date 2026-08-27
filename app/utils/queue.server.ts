@@ -205,3 +205,35 @@ export async function processPendingJobs(limit = 20) {
 
   return { processed: processedCount, totalFound: pendingJobs.length };
 }
+
+/**
+ * Manually cancels a scheduled or pending job.
+ */
+export async function cancelJobById(jobId: string, merchantId: string) {
+  return await db.job.updateMany({
+    where: { id: jobId, merchantId, status: { in: ["PENDING", "PROCESSING"] } },
+    data: { status: "CANCELLED" },
+  });
+}
+
+/**
+ * Manually triggers a scheduled job immediately without waiting for delay timer.
+ */
+export async function runJobImmediately(jobId: string, merchantId: string) {
+  await db.job.updateMany({
+    where: { id: jobId, merchantId },
+    data: { status: "PENDING", runAt: new Date() },
+  });
+  return await processPendingJobs(10);
+}
+
+/**
+ * Retries a failed or halted job.
+ */
+export async function retryJobById(jobId: string, merchantId: string) {
+  await db.job.updateMany({
+    where: { id: jobId, merchantId },
+    data: { status: "PENDING", attempts: 0, runAt: new Date(), error: null },
+  });
+  return await processPendingJobs(10);
+}
