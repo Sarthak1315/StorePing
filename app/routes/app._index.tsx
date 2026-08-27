@@ -107,6 +107,16 @@ export default function DashboardOverview() {
         content: isConnected ? "Test WhatsApp Send" : "Connect WhatsApp",
         onAction: () => navigate(isConnected ? "/app/settings" : "/app/connect"),
       }}
+      secondaryActions={[
+        {
+          content: "📦 Orders & 1-Click Send",
+          onAction: () => navigate("/app/orders"),
+        },
+        {
+          content: "💬 Live Inbox",
+          onAction: () => navigate("/app/inbox"),
+        },
+      ]}
     >
       <Layout>
         {/* 🚨 Critical Meta Alert Banner (Payment Required / Limit Exceeded) */}
