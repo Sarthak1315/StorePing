@@ -35,47 +35,46 @@ export async function loader({ request }: LoaderFunctionArgs) {
   });
 
   let ordersList: any[] = [];
+  let debugErrors: string[] = [];
 
-  // 1. Fetch Placed/Completed Shopify Orders
+  // 1. Fetch Placed / Completed Shopify Orders (e.g. #1001, #1002)
   try {
     const ordersRes = await admin.graphql(`
       #graphql
       query getOrdersForWhatsApp {
-        orders(first: 30, sortKey: CREATED_AT, reverse: true) {
-          edges {
-            node {
-              id
+        orders(first: 50, sortKey: CREATED_AT, reverse: true) {
+          nodes {
+            id
+            name
+            createdAt
+            phone
+            currentTotalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            displayFinancialStatus
+            displayFulfillmentStatus
+            customer {
+              displayName
+              phone
+              defaultPhoneNumber {
+                phoneNumber
+              }
+            }
+            shippingAddress {
               name
-              createdAt
-              totalPriceSet {
-                shopMoney {
-                  amount
-                  currencyCode
-                }
-              }
-              displayFinancialStatus
-              displayFulfillmentStatus
-              customer {
-                firstName
-                lastName
-                phone
-                email
-              }
-              shippingAddress {
-                phone
-                name
-                city
-              }
-              billingAddress {
-                phone
-              }
-              lineItems(first: 5) {
-                edges {
-                  node {
-                    title
-                    quantity
-                  }
-                }
+              phone
+              city
+            }
+            billingAddress {
+              phone
+            }
+            lineItems(first: 5) {
+              nodes {
+                title
+                quantity
               }
             }
           }
@@ -84,31 +83,36 @@ export async function loader({ request }: LoaderFunctionArgs) {
     `);
 
     const ordersJson = await ordersRes.json();
-    if (ordersJson.data?.orders?.edges) {
-      const fetched = ordersJson.data.orders.edges.map((e: any) => {
-        const node = e.node;
+    if (ordersJson.errors && ordersJson.errors.length > 0) {
+      debugErrors.push(`Orders query: ${ordersJson.errors.map((e: any) => e.message).join(", ")}`);
+    }
+
+    if (ordersJson.data?.orders?.nodes) {
+      const fetched = ordersJson.data.orders.nodes.map((node: any) => {
         const rawPhone =
-          node.customer?.phone ||
+          node.phone ||
           node.shippingAddress?.phone ||
+          node.customer?.defaultPhoneNumber?.phoneNumber ||
+          node.customer?.phone ||
           node.billingAddress?.phone ||
           "";
         const phone = normalizePhoneNumber(rawPhone);
         const customerName =
-          node.customer?.firstName
-            ? `${node.customer.firstName} ${node.customer.lastName || ""}`.trim()
-            : node.shippingAddress?.name || "Customer";
+          node.customer?.displayName ||
+          node.shippingAddress?.name ||
+          "Customer";
 
-        const items = node.lineItems?.edges
-          ?.map((li: any) => `${li.node.title} (x${li.node.quantity})`)
+        const items = (node.lineItems?.nodes || [])
+          .map((li: any) => `${li.title} (x${li.quantity})`)
           .join(", ");
 
         return {
           id: node.id,
           orderNumber: node.name,
           createdAt: node.createdAt,
-          total: `${node.totalPriceSet?.shopMoney?.currencyCode || "INR"} ${node.totalPriceSet?.shopMoney?.amount || "0.00"}`,
-          totalAmount: node.totalPriceSet?.shopMoney?.amount || "0.00",
-          currency: node.totalPriceSet?.shopMoney?.currencyCode || "INR",
+          total: `${node.currentTotalPriceSet?.shopMoney?.currencyCode || "INR"} ${node.currentTotalPriceSet?.shopMoney?.amount || "0.00"}`,
+          totalAmount: node.currentTotalPriceSet?.shopMoney?.amount || "0.00",
+          currency: node.currentTotalPriceSet?.shopMoney?.currencyCode || "INR",
           financialStatus: node.displayFinancialStatus || "PAID",
           fulfillmentStatus: node.displayFulfillmentStatus || "UNFULFILLED",
           customerName,
@@ -120,7 +124,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       ordersList.push(...fetched);
     }
   } catch (err: any) {
-    console.warn("GraphQL Orders fetch notice:", err.message);
+    debugErrors.push(`Orders fetch error: ${err.message}`);
   }
 
   // 2. Fetch Draft Orders (e.g. #D1, #D2)
@@ -128,40 +132,38 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const draftRes = await admin.graphql(`
       #graphql
       query getDraftOrdersForWhatsApp {
-        draftOrders(first: 30, reverse: true) {
-          edges {
-            node {
-              id
+        draftOrders(first: 50, reverse: true) {
+          nodes {
+            id
+            name
+            createdAt
+            phone
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            status
+            customer {
+              displayName
+              phone
+              defaultPhoneNumber {
+                phoneNumber
+              }
+            }
+            shippingAddress {
               name
-              createdAt
-              totalPriceSet {
-                shopMoney {
-                  amount
-                  currencyCode
-                }
-              }
-              status
-              customer {
-                firstName
-                lastName
-                phone
-                email
-              }
-              shippingAddress {
-                phone
-                name
-                city
-              }
-              billingAddress {
-                phone
-              }
-              lineItems(first: 5) {
-                edges {
-                  node {
-                    title
-                    quantity
-                  }
-                }
+              phone
+              city
+            }
+            billingAddress {
+              phone
+            }
+            lineItems(first: 5) {
+              nodes {
+                title
+                quantity
               }
             }
           }
@@ -170,22 +172,27 @@ export async function loader({ request }: LoaderFunctionArgs) {
     `);
 
     const draftJson = await draftRes.json();
-    if (draftJson.data?.draftOrders?.edges) {
-      const fetchedDrafts = draftJson.data.draftOrders.edges.map((e: any) => {
-        const node = e.node;
+    if (draftJson.errors && draftJson.errors.length > 0) {
+      debugErrors.push(`Draft orders query: ${draftJson.errors.map((e: any) => e.message).join(", ")}`);
+    }
+
+    if (draftJson.data?.draftOrders?.nodes) {
+      const fetchedDrafts = draftJson.data.draftOrders.nodes.map((node: any) => {
         const rawPhone =
-          node.customer?.phone ||
+          node.phone ||
           node.shippingAddress?.phone ||
+          node.customer?.defaultPhoneNumber?.phoneNumber ||
+          node.customer?.phone ||
           node.billingAddress?.phone ||
           "";
         const phone = normalizePhoneNumber(rawPhone);
         const customerName =
-          node.customer?.firstName
-            ? `${node.customer.firstName} ${node.customer.lastName || ""}`.trim()
-            : node.shippingAddress?.name || "Customer";
+          node.customer?.displayName ||
+          node.shippingAddress?.name ||
+          "Customer";
 
-        const items = node.lineItems?.edges
-          ?.map((li: any) => `${li.node.title} (x${li.node.quantity})`)
+        const items = (node.lineItems?.nodes || [])
+          .map((li: any) => `${li.title} (x${li.quantity})`)
           .join(", ");
 
         return {
@@ -206,7 +213,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       ordersList.push(...fetchedDrafts);
     }
   } catch (err: any) {
-    console.warn("GraphQL Draft Orders fetch notice:", err.message);
+    debugErrors.push(`Draft orders error: ${err.message}`);
   }
 
   // Sort combined orders by date descending
@@ -236,6 +243,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     orders: ordersList,
     abandonedCarts,
     activeJobs,
+    debugErrors,
   });
 }
 
@@ -305,7 +313,12 @@ export async function action({ request }: ActionFunctionArgs) {
         source: "manual-order",
       });
 
-      return json<ActionData>({ success: true, orderNumber, phone: cleanPhone, message: `WhatsApp message delivered to +${cleanPhone}!` });
+      return json<ActionData>({
+        success: true,
+        orderNumber,
+        phone: cleanPhone,
+        message: `WhatsApp notification successfully delivered to +${cleanPhone}!`,
+      });
     } catch (err: any) {
       return json<ActionData>({ success: false, error: err.message }, { status: 500 });
     }
@@ -341,7 +354,12 @@ export async function action({ request }: ActionFunctionArgs) {
         return json<ActionData>({ success: false, error: result.error || "Failed to send cart recovery" }, { status: 500 });
       }
 
-      return json<ActionData>({ success: true, phone: cleanPhone, recovered: true, message: `Cart recovery message sent to +${cleanPhone}!` });
+      return json<ActionData>({
+        success: true,
+        phone: cleanPhone,
+        recovered: true,
+        message: `Cart recovery message sent to +${cleanPhone}!`,
+      });
     } catch (err: any) {
       return json<ActionData>({ success: false, error: err.message }, { status: 500 });
     }
@@ -365,7 +383,7 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function OrdersManualPage() {
-  const { isWhatsAppConnected, orders, abandonedCarts } = useLoaderData<typeof loader>();
+  const { isWhatsAppConnected, orders, abandonedCarts, debugErrors } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<ActionData>();
   const navigate = useNavigate();
 
@@ -429,27 +447,30 @@ export default function OrdersManualPage() {
   ];
 
   const orderRows = orders.map((order: any) => [
-    <InlineStack gap="100" blockAlign="center">
+    <InlineStack gap="100" blockAlign="center" key={order.id}>
       <Text as="span" variant="bodySm" fontWeight="bold">
         {order.orderNumber}
       </Text>
       {order.isDraft && <Badge tone="info">Draft</Badge>}
     </InlineStack>,
-    <Text as="span" variant="bodySm">
+    <Text as="span" variant="bodySm" key={`cust-${order.id}`}>
       {order.customerName}
     </Text>,
     order.phone ? (
-      <Badge tone="success">+{order.phone}</Badge>
+      <Badge tone="success" key={`phone-${order.id}`}>{`+${order.phone}`}</Badge>
     ) : (
-      <Badge tone="warning">No phone attached</Badge>
+      <Badge tone="warning" key={`phone-${order.id}`}>No phone attached</Badge>
     ),
-    <Text as="span" variant="bodySm">
+    <Text as="span" variant="bodySm" key={`total-${order.id}`}>
       {order.total}
     </Text>,
-    <Badge tone={order.financialStatus === "PAID" || order.financialStatus === "COMPLETED" ? "success" : "attention"}>
+    <Badge
+      key={`status-${order.id}`}
+      tone={order.financialStatus === "PAID" || order.financialStatus === "COMPLETED" ? "success" : "attention"}
+    >
       {order.financialStatus}
     </Badge>,
-    <InlineStack gap="150">
+    <InlineStack gap="150" key={`actions-${order.id}`}>
       <Button
         size="slim"
         variant="primary"
@@ -475,20 +496,20 @@ export default function OrdersManualPage() {
   ]);
 
   const cartRows = abandonedCarts.map((cart: any) => [
-    <Text as="span" variant="bodySm" fontWeight="bold">
+    <Text as="span" variant="bodySm" fontWeight="bold" key={cart.id}>
       {cart.customerName || "Customer"}
     </Text>,
-    <Badge tone="success">+{cart.customerPhone}</Badge>,
-    <Text as="span" variant="bodySm">
+    <Badge tone="success" key={`phone-${cart.id}`}>{`+${cart.customerPhone}`}</Badge>,
+    <Text as="span" variant="bodySm" key={`total-${cart.id}`}>
       {cart.currency} {parseFloat(cart.cartTotal).toFixed(2)}
     </Text>,
-    <Badge tone={cart.status === "RECOVERED" ? "success" : "attention"}>
+    <Badge tone={cart.status === "RECOVERED" ? "success" : "attention"} key={`status-${cart.id}`}>
       {cart.status}
     </Badge>,
-    <Text as="span" variant="bodyXs" tone="subdued">
+    <Text as="span" variant="bodyXs" tone="subdued" key={`date-${cart.id}`}>
       {new Date(cart.createdAt).toLocaleDateString()}
     </Text>,
-    <InlineStack gap="150">
+    <InlineStack gap="150" key={`actions-${cart.id}`}>
       <Button
         size="slim"
         variant="primary"
@@ -522,6 +543,12 @@ export default function OrdersManualPage() {
         {fetcher.data?.error && (
           <Banner title="Delivery Notice" tone="critical">
             <p>{fetcher.data.error}</p>
+          </Banner>
+        )}
+
+        {debugErrors && debugErrors.length > 0 && (
+          <Banner title="Shopify API Scope Notice" tone="info">
+            <p>{debugErrors.join(" | ")}</p>
           </Banner>
         )}
 
