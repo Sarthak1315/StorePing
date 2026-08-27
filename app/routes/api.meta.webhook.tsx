@@ -87,11 +87,39 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         for (const msg of messages) {
           const rawFromPhone = msg.from; // e.g. "919374626600"
-          const messageText = msg.text?.body || msg.interactive?.button_reply?.title || msg.button?.text || "Media Message";
-          const metaMessageId = msg.id;
           const profileName = contacts.find((c: any) => c.wa_id === rawFromPhone)?.profile?.name;
-
+          const metaMessageId = msg.id;
           const fromPhone = rawFromPhone.replace(/[^0-9]/g, "");
+
+          const msgType = (msg.type || "text").toUpperCase(); // IMAGE, VIDEO, DOCUMENT, AUDIO, TEXT
+          
+          let mediaId: string | null = null;
+          let mimeType: string | null = null;
+          let caption: string | null = null;
+          let messageText: string = "";
+
+          if (msg.type === "image") {
+            mediaId = msg.image?.id || null;
+            mimeType = msg.image?.mime_type || "image/jpeg";
+            caption = msg.image?.caption || null;
+            messageText = caption || "📷 Photo";
+          } else if (msg.type === "video") {
+            mediaId = msg.video?.id || null;
+            mimeType = msg.video?.mime_type || "video/mp4";
+            caption = msg.video?.caption || null;
+            messageText = caption || "🎥 Video";
+          } else if (msg.type === "document") {
+            mediaId = msg.document?.id || null;
+            mimeType = msg.document?.mime_type || "application/pdf";
+            caption = msg.document?.filename || msg.document?.caption || "Document.pdf";
+            messageText = `📄 ${caption}`;
+          } else if (msg.type === "audio" || msg.type === "voice") {
+            mediaId = msg.audio?.id || msg.voice?.id || null;
+            mimeType = msg.audio?.mime_type || "audio/ogg";
+            messageText = "🎵 Voice Note";
+          } else {
+            messageText = msg.text?.body || msg.interactive?.button_reply?.title || msg.button?.text || "Message";
+          }
 
           if (merchant) {
             // Calculate 24-hour Customer Service Window (CSW)
@@ -130,14 +158,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               data: {
                 conversationId: conversation.id,
                 sender: "CUSTOMER",
-                messageType: msg.type?.toUpperCase() || "TEXT",
+                messageType: msgType,
                 bodyText: messageText,
+                mediaId,
+                mediaUrl: mediaId ? `/api/meta/media?mediaId=${mediaId}` : null,
+                mimeType,
+                caption,
                 metaMessageId,
                 status: "DELIVERED",
               },
             });
 
-            await logInfo(`Incoming WhatsApp from ${fromPhone}: "${messageText}"`, {
+            await logInfo(`Incoming WhatsApp ${msgType} from ${fromPhone}: "${messageText}"`, {
               shop: merchant.shop,
               source: "meta-webhook",
             });

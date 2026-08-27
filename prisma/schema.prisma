@@ -213,8 +213,12 @@ model ChatMessage {
   conversationId     String
   conversation       Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender             String        // "MERCHANT" | "CUSTOMER" | "BOT"
-  messageType        String        @default("TEXT") // TEXT, TEMPLATE, INTERACTIVE, IMAGE
+  messageType        String        @default("TEXT") // TEXT, TEMPLATE, INTERACTIVE, IMAGE, VIDEO, DOCUMENT, AUDIO
   bodyText           String        @db.Text
+  mediaUrl           String?       @db.Text
+  mediaId            String?
+  mimeType           String?
+  caption            String?       @db.Text
   metaMessageId      String?       @unique
   status             String        @default("SENT") // SENT, DELIVERED, READ, FAILED
   errorMessage       String?

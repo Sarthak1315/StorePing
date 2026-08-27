@@ -226,6 +226,8 @@ export interface SendWhatsAppMessageOptions {
   customerName?: string;
   eventType: string;
   bodyText?: string;
+  mediaUrl?: string | null;
+  mediaType?: "IMAGE" | "VIDEO" | "DOCUMENT" | "AUDIO" | null;
   templateName?: string;
   templateLanguage?: string;
   templateParameters?: string[];
@@ -251,6 +253,8 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     customerName,
     eventType,
     bodyText,
+    mediaUrl,
+    mediaType,
     templateName,
     templateLanguage = "en_US",
     templateParameters = [],
@@ -316,7 +320,40 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
   // Build Meta Cloud API Payload
   let payload: any;
 
-  if (templateName) {
+  if (mediaUrl && mediaType === "IMAGE") {
+    payload = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: recipientPhone,
+      type: "image",
+      image: {
+        link: mediaUrl,
+        ...(bodyText ? { caption: bodyText } : {}),
+      },
+    };
+  } else if (mediaUrl && mediaType === "VIDEO") {
+    payload = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: recipientPhone,
+      type: "video",
+      video: {
+        link: mediaUrl,
+        ...(bodyText ? { caption: bodyText } : {}),
+      },
+    };
+  } else if (mediaUrl && mediaType === "DOCUMENT") {
+    payload = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: recipientPhone,
+      type: "document",
+      document: {
+        link: mediaUrl,
+        filename: bodyText || "Attachment.pdf",
+      },
+    };
+  } else if (templateName) {
     // Official Meta Template Message (Delivers to ANY customer worldwide outside 24h CSW)
     const components: any[] = [];
 
@@ -532,8 +569,10 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
         data: {
           conversationId: conv.id,
           sender: senderRole,
-          messageType: templateName ? "TEMPLATE" : buttonType ? "INTERACTIVE" : "TEXT",
+          messageType: mediaType ? mediaType : templateName ? "TEMPLATE" : buttonType ? "INTERACTIVE" : "TEXT",
           bodyText: displayedBody,
+          mediaUrl: mediaUrl || null,
+          caption: bodyText || null,
           metaMessageId: messageId,
           status: "SENT",
         },

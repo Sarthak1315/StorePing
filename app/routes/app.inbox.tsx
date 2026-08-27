@@ -21,7 +21,16 @@ import {
   FormLayout,
   Tooltip,
 } from "@shopify/polaris";
-import { SearchIcon, SendIcon, ChatIcon, PlusIcon, RefreshIcon } from "@shopify/polaris-icons";
+import {
+  SearchIcon,
+  SendIcon,
+  ChatIcon,
+  PersonIcon,
+  ClockIcon,
+  CheckIcon,
+  RefreshIcon,
+  PlusIcon,
+} from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { sendWhatsAppMessage, subscribeWabaToWebhooks } from "../utils/meta-whatsapp.server";
@@ -117,13 +126,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const merchant = await db.merchant.findUnique({ where: { shop } });
   if (!merchant) throw new Response("Merchant not found", { status: 404 });
 
-  // 1. Reply to existing conversation
+  // 1. Reply to existing conversation (Supports Text & Media)
   if (intent === "sendReply") {
     const customerPhone = formData.get("customerPhone") as string;
     const messageText = (formData.get("messageText") as string || "").trim();
+    const mediaUrl = (formData.get("mediaUrl") as string || "").trim() || null;
+    const mediaType = (formData.get("mediaType") as string || "IMAGE") as any;
 
-    if (!customerPhone || !messageText) {
-      return json({ success: false, error: "Message text cannot be empty.", messageId: null, newPhone: null }, { status: 400 });
+    if (!customerPhone || (!messageText && !mediaUrl)) {
+      return json({ success: false, error: "Message text or media is required.", messageId: null, newPhone: null }, { status: 400 });
     }
 
     try {
@@ -132,7 +143,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         recipientPhone: customerPhone,
         customerName: "Customer",
         eventType: "SUPPORT_CHAT",
-        bodyText: messageText,
+        bodyText: messageText || undefined,
+        mediaUrl: mediaUrl || undefined,
+        mediaType: mediaUrl ? mediaType : undefined,
         senderRole: "MERCHANT",
       });
 
@@ -141,7 +154,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
 
       await logInfo(`Merchant replied to customer ${customerPhone}`, { shop, source: "inbox" });
-      return json({ success: true, error: null, messageId: result.messageId, newPhone: null, sentText: messageText });
+      return json({ success: true, error: null, messageId: result.messageId, newPhone: null, sentText: messageText, sentMediaUrl: mediaUrl });
     } catch (err: any) {
       await logError(`Failed to send reply: ${err.message}`, { shop, source: "inbox" });
       return json({ success: false, error: err.message, messageId: null, newPhone: null });
@@ -201,134 +214,143 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
 
-      await logInfo(`Started new conversation with +${cleanPhone}`, { shop, source: "inbox" });
+      await logInfo(`Started new conversation with ${cleanPhone}`, { shop, source: "inbox" });
       return json({ success: true, error: null, messageId: result.messageId, newPhone: cleanPhone });
     } catch (err: any) {
       await logError(`Failed to start conversation: ${err.message}`, { shop, source: "inbox" });
-      return json({ success: false, error: err.message, messageId: null, newPhone: null }, { status: 500 });
+      return json({ success: false, error: err.message, messageId: null, newPhone: null });
     }
   }
 
-  // 3. Mark Conversation as Resolved
-  if (intent === "resolveConversation") {
-    const conversationId = formData.get("conversationId") as string;
-    await db.conversation.update({
-      where: { id: conversationId },
-      data: { status: "RESOLVED", unreadCount: 0 },
-    });
+  // 3. Mark conversation as Read
+  if (intent === "markRead") {
+    const customerPhone = formData.get("customerPhone") as string;
+    if (customerPhone) {
+      await db.conversation.updateMany({
+        where: { merchantId: merchant.id, customerPhone },
+        data: { unreadCount: 0 },
+      });
+    }
     return json({ success: true, error: null, messageId: null, newPhone: null });
   }
 
   return json({ success: true, error: null, messageId: null, newPhone: null });
 };
 
-export default function WhatsAppInboxPage() {
-  const { merchant, conversations, initialSelectedPhone, searchQuery, loadError } =
+export default function LiveInboxPage() {
+  const { merchant, conversations, initialSelectedPhone, loadError } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const actionData = fetcher.data as any;
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
 
-  // Instant Client-Side Tab Switching (0ms delay)
-  const [selectedPhone, setSelectedPhone] = useState<string>(
-    initialSelectedPhone || conversations[0]?.customerPhone || ""
-  );
+  // Instant 0ms Client State for Conversation Selection
+  const [selectedPhone, setSelectedPhone] = useState<string>(initialSelectedPhone);
 
-  // Live Real-Time Search Filter State
-  const [localSearch, setLocalSearch] = useState(searchQuery);
-  const [replyText, setReplyText] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Dual-Engine Search State (Engine 1: Keystroke filter, Engine 2: Database deep query)
+  const [searchTerm, setSearchTerm] = useState<string>("");
+  const [replyText, setReplyText] = useState<string>("");
+  const [replyMediaUrl, setReplyMediaUrl] = useState<string>("");
+  const [showMediaInput, setShowMediaInput] = useState<boolean>(false);
+  const [mediaType, setMediaType] = useState<"IMAGE" | "VIDEO" | "DOCUMENT">("IMAGE");
 
-  // Fast In-Memory Filtering across loaded conversations (0ms on keystroke)
-  const filteredConversations = useMemo(() => {
-    if (!localSearch.trim()) return conversations;
-    const q = localSearch.toLowerCase().replace(/[^a-z0-9#]/g, "");
-
-    return conversations.filter((c: any) => {
-      const phoneMatch = (c.customerPhone || "").replace(/[^0-9]/g, "").includes(q);
-      const nameMatch = (c.customerName || "").toLowerCase().includes(localSearch.toLowerCase());
-      const orderMatch = (c.lastOrderNumber || "").toLowerCase().includes(localSearch.toLowerCase());
-      const msgMatch = (c.lastMessageText || "").toLowerCase().includes(localSearch.toLowerCase());
-      return phoneMatch || nameMatch || orderMatch || msgMatch;
-    });
-  }, [conversations, localSearch]);
-
-  const activeConversation = useMemo(() => {
-    return (
-      conversations.find((c: any) => c.customerPhone === selectedPhone) ||
-      filteredConversations[0] ||
-      conversations[0] ||
-      null
-    );
-  }, [conversations, filteredConversations, selectedPhone]);
-
-  // New Conversation Modal State
+  // "Start New Chat" Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newPhone, setNewPhone] = useState("");
   const [newName, setNewName] = useState("");
   const [newOrderNumber, setNewOrderNumber] = useState("");
   const [newInitialMessage, setNewInitialMessage] = useState(
-    "Hello! This is Everon Lab support. How can we help you today? 😊"
+    "Hello! This is support. How can we assist you today? 😊"
   );
 
-  // Auto-scroll chat to bottom on load/update
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isSubmitting = fetcher.state !== "idle";
+
+  // Engine 1: Instant 0ms In-Memory Keystroke Filtering
+  const filteredConversations = useMemo(() => {
+    if (!searchTerm.trim()) return conversations;
+    const query = searchTerm.toLowerCase().trim();
+    const cleanQuery = query.replace(/[^0-9]/g, "");
+
+    return conversations.filter((c) => {
+      const matchName = c.customerName?.toLowerCase().includes(query);
+      const matchPhone = cleanQuery && c.customerPhone.includes(cleanQuery);
+      const matchOrder = c.lastOrderNumber?.toLowerCase().includes(query);
+      const matchText = c.lastMessageText?.toLowerCase().includes(query);
+      return matchName || matchPhone || matchOrder || matchText;
+    });
+  }, [conversations, searchTerm]);
+
+  // Derive Active Conversation in 0ms without server roundtrip
+  const activeConversation = useMemo(() => {
+    return (
+      conversations.find((c) => c.customerPhone === selectedPhone) ||
+      conversations[0] ||
+      null
+    );
+  }, [conversations, selectedPhone]);
+
+  // Keep URL in sync smoothly without triggering full reload
+  const handleSelectConversation = (phone: string) => {
+    setSelectedPhone(phone);
+    const newUrl = new URL(window.location.href);
+    newUrl.searchParams.set("phone", phone);
+    window.history.replaceState({}, "", newUrl.toString());
+
+    // Mark as read in background
+    const form = new FormData();
+    form.append("intent", "markRead");
+    form.append("customerPhone", phone);
+    fetcher.submit(form, { method: "POST" });
+  };
+
+  // Scroll to bottom on new message or conversation switch
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeConversation?.messages]);
 
-  // Clear reply input or switch to newly started conversation
+  // Auto-refresh inbox in background every 10 seconds for real-time live chat
   useEffect(() => {
-    if (actionData?.success && fetcher.state === "idle") {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible" && !isSubmitting) {
+        revalidator.revalidate();
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [revalidator, isSubmitting]);
+
+  // Handle successful reply or new conversation creation
+  useEffect(() => {
+    if (fetcher.data?.success) {
       setReplyText("");
-      if (actionData?.newPhone) {
+      setReplyMediaUrl("");
+      setShowMediaInput(false);
+      if (fetcher.data.newPhone) {
+        setSelectedPhone(fetcher.data.newPhone);
         setIsModalOpen(false);
         setNewPhone("");
         setNewName("");
         setNewOrderNumber("");
-        setSelectedPhone(actionData.newPhone);
-        revalidator.revalidate();
       }
     }
-  }, [actionData, fetcher.state]);
+  }, [fetcher.data]);
 
-  // Background auto-refresh every 20 seconds for incoming customer replies
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (document.visibilityState === "visible") {
-        revalidator.revalidate();
-      }
-    }, 20000);
-    return () => clearInterval(interval);
-  }, [revalidator]);
-
-  // Deep Server-Side Database Search (for records beyond top loaded cache)
-  const handleDeepSearchSubmit = () => {
-    const params = new URLSearchParams(searchParams);
-    if (localSearch) {
-      params.set("q", localSearch);
-    } else {
-      params.delete("q");
-    }
-    setSearchParams(params);
-  };
-
-  // Instant 0ms Local Switch without full page network reloading
-  const handleSelectConversation = (phone: string) => {
-    setSelectedPhone(phone);
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      url.searchParams.set("phone", phone);
-      window.history.replaceState({}, "", url.toString());
-    }
-  };
+  // 24-Hour Customer Service Window (CSW) Calculation
+  const isInsideCSW = useMemo(() => {
+    if (!activeConversation?.cswExpiresAt) return true;
+    return new Date(activeConversation.cswExpiresAt).getTime() > Date.now();
+  }, [activeConversation]);
 
   const handleSendReply = () => {
-    if (!replyText.trim() || !activeConversation) return;
+    if ((!replyText.trim() && !replyMediaUrl.trim()) || !activeConversation) return;
     const form = new FormData();
     form.append("intent", "sendReply");
     form.append("customerPhone", activeConversation.customerPhone);
-    form.append("messageText", replyText);
+    form.append("messageText", replyText.trim());
+    if (replyMediaUrl.trim()) {
+      form.append("mediaUrl", replyMediaUrl.trim());
+      form.append("mediaType", mediaType);
+    }
     fetcher.submit(form, { method: "POST" });
   };
 
@@ -336,243 +358,272 @@ export default function WhatsAppInboxPage() {
     if (!newPhone.trim() || !newInitialMessage.trim()) return;
     const form = new FormData();
     form.append("intent", "startNewConversation");
-    form.append("customerPhone", newPhone);
-    form.append("customerName", newName);
-    form.append("orderNumber", newOrderNumber);
-    form.append("messageText", newInitialMessage);
+    form.append("customerPhone", newPhone.trim());
+    form.append("customerName", newName.trim());
+    form.append("orderNumber", newOrderNumber.trim());
+    form.append("messageText", newInitialMessage.trim());
     fetcher.submit(form, { method: "POST" });
   };
 
-  const isCSWOpen =
-    activeConversation?.cswExpiresAt &&
-    new Date(activeConversation.cswExpiresAt).getTime() > Date.now();
-
-  const isSubmitting = fetcher.state !== "idle";
+  // Deep Database Search Trigger on Enter
+  const handleDeepSearch = () => {
+    const params = new URLSearchParams(searchParams);
+    if (searchTerm) {
+      params.set("q", searchTerm);
+    } else {
+      params.delete("q");
+    }
+    setSearchParams(params);
+  };
 
   return (
     <Page
-      title="WhatsApp Live Conversations & Support Inbox"
-      subtitle="High-speed real-time customer WhatsApp chat with instant live search and direct outreach."
+      title="Live Inbox & 2-Way Chat"
+      subtitle="Real-time 2-way customer WhatsApp conversations, photos, delivery complaints, and order support."
       primaryAction={{
-        content: "➕ Start New Chat",
+        content: "➕ Start Chat with New Number",
         onAction: () => setIsModalOpen(true),
       }}
       secondaryActions={[
         {
-          content: "Refresh Messages",
+          content: "Refresh",
           icon: RefreshIcon,
           loading: revalidator.state === "loading",
           onAction: () => revalidator.revalidate(),
         },
       ]}
-      fullWidth
     >
       <BlockStack gap="400">
         {loadError && (
-          <Banner title="Notice" tone="warning" onDismiss={() => {}}>
-            {loadError}
+          <Banner title="Notice" tone="warning">
+            <p>{loadError}</p>
           </Banner>
         )}
 
-        {actionData?.error && (
-          <Banner title="Operation Notice" tone="critical" onDismiss={() => {}}>
-            {actionData.error}
+        {fetcher.data?.error && (
+          <Banner title="Messaging Error" tone="critical">
+            <p>{fetcher.data.error}</p>
           </Banner>
         )}
 
+        {!merchant.isWhatsAppConnected && (
+          <Banner
+            title="WhatsApp Not Connected"
+            tone="warning"
+            action={{ content: "Connect WhatsApp", url: "/app/connect" }}
+          >
+            <p>Connect your Meta WhatsApp Business Account to enable live 2-way customer conversations.</p>
+          </Banner>
+        )}
+
+        {/* Main Inbox Container */}
         <Layout>
-          {/* Left Column: Search, New Chat & Instant Filtered Conversations List */}
+          {/* Left Sidebar: Conversation Thread List with 0ms Keystroke Search */}
           <Layout.Section variant="oneThird">
-            <Card padding="300">
-              <BlockStack gap="300">
-                {/* Instant Live Search Bar */}
-                <div style={{ display: "flex", gap: "8px" }}>
+            <Card padding="0">
+              <div style={{ padding: "12px", borderBottom: "1px solid #e2e8f0" }}>
+                <InlineStack gap="200" align="space-between">
                   <div style={{ flex: 1 }}>
                     <TextField
-                      label="Search Conversations"
+                      label="Search conversations"
                       labelHidden
                       placeholder="Live search phone, name, or #1001..."
-                      value={localSearch}
-                      onChange={setLocalSearch}
-                      autoComplete="off"
+                      value={searchTerm}
+                      onChange={setSearchTerm}
+                      onKeyDown={(e) => e.key === "Enter" && handleDeepSearch()}
                       prefix={<Icon source={SearchIcon} />}
+                      autoComplete="off"
                       clearButton
-                      onClearButtonClick={() => {
-                        setLocalSearch("");
-                        const params = new URLSearchParams(searchParams);
-                        params.delete("q");
-                        setSearchParams(params);
-                      }}
+                      onClearButtonClick={() => setSearchTerm("")}
                     />
                   </div>
-                  <Tooltip content="Deep Search across all historical DB records">
-                    <Button onClick={handleDeepSearchSubmit}>Search</Button>
-                  </Tooltip>
-                </div>
+                  <Button size="slim" onClick={handleDeepSearch}>
+                    Search
+                  </Button>
+                </InlineStack>
+              </div>
 
-                <Button icon={PlusIcon} onClick={() => setIsModalOpen(true)} fullWidth>
+              {/* Quick Action: Start New Conversation Button */}
+              <div style={{ padding: "8px 12px", borderBottom: "1px solid #f1f5f9" }}>
+                <Button
+                  fullWidth
+                  size="slim"
+                  icon={PlusIcon}
+                  onClick={() => setIsModalOpen(true)}
+                >
                   Start Chat with New Number
                 </Button>
+              </div>
 
-                <Divider />
-
-                {/* Instant Filtered Conversation List */}
-                <div style={{ maxHeight: "600px", overflowY: "auto" }}>
-                  {filteredConversations.length === 0 ? (
-                    <Box padding="400">
+              {/* Conversation List */}
+              <div style={{ maxHeight: "600px", overflowY: "auto" }}>
+                {filteredConversations.length === 0 ? (
+                  <Box padding="400">
+                    <BlockStack gap="200" align="center">
                       <Text as="p" tone="subdued" alignment="center">
-                        {localSearch ? `No matches for "${localSearch}"` : "No conversations found."}
+                        {searchTerm
+                          ? "No conversations match your search."
+                          : "No WhatsApp conversations yet. Use 'Start Chat' or send a test alert!"}
                       </Text>
-                      {localSearch && (
-                        <div style={{ marginTop: "10px", textAlign: "center" }}>
-                          <Button onClick={handleDeepSearchSubmit} size="slim">
-                            Deep Search in Database
-                          </Button>
-                        </div>
-                      )}
-                    </Box>
-                  ) : (
-                    <BlockStack gap="100">
-                      {filteredConversations.map((conv: any) => {
-                        const isSelected = activeConversation?.id === conv.id;
-                        const hasCSW =
-                          conv.cswExpiresAt &&
-                          new Date(conv.cswExpiresAt).getTime() > Date.now();
+                    </BlockStack>
+                  </Box>
+                ) : (
+                  filteredConversations.map((conv) => {
+                    const isSelected = activeConversation?.id === conv.id;
+                    const hasUnread = conv.unreadCount > 0;
+                    const cswActive =
+                      !conv.cswExpiresAt ||
+                      new Date(conv.cswExpiresAt).getTime() > Date.now();
 
-                        return (
-                          <div
-                            key={conv.id}
-                            onClick={() => handleSelectConversation(conv.customerPhone)}
-                            style={{
-                              padding: "12px",
-                              borderRadius: "8px",
-                              backgroundColor: isSelected ? "#f0fdf4" : "transparent",
-                              border: isSelected ? "1px solid #86efac" : "1px solid transparent",
-                              cursor: "pointer",
-                              transition: "all 0.1s ease",
-                            }}
-                          >
-                            <InlineStack align="space-between" blockAlign="start">
-                              <InlineStack gap="200" blockAlign="center">
-                                <Avatar
-                                  customer
-                                  size="md"
-                                  name={conv.customerName || conv.customerPhone}
-                                />
-                                <div>
-                                  <Text as="span" variant="bodyMd" fontWeight="semibold">
-                                    {conv.customerName || `+${conv.customerPhone}`}
-                                  </Text>
-                                  {conv.lastOrderNumber && (
-                                    <div style={{ marginTop: "2px" }}>
-                                      <Tag>{conv.lastOrderNumber}</Tag>
-                                    </div>
-                                  )}
-                                </div>
-                              </InlineStack>
-                              <div style={{ textAlign: "right" }}>
-                                <Text as="span" variant="bodyXs" tone="subdued">
-                                  {new Date(conv.lastMessageAt).toLocaleTimeString([], {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}
-                                </Text>
-                                {conv.unreadCount > 0 && (
-                                  <div style={{ marginTop: "4px" }}>
-                                    <Badge tone="attention">{String(conv.unreadCount)}</Badge>
-                                  </div>
-                                )}
-                              </div>
-                            </InlineStack>
-
-                            {/* Snippet */}
-                            <div
-                              style={{
-                                marginTop: "6px",
-                                fontSize: "12px",
-                                color: "#64748b",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {conv.lastMessageText || "No messages yet"}
-                            </div>
-
-                            {/* Status Badges */}
-                            <div style={{ marginTop: "6px" }}>
-                              {hasCSW ? (
-                                <Badge tone="success">🟢 24h Window Open (Free)</Badge>
-                              ) : (
-                                <Badge tone="info">Template Reach</Badge>
+                    return (
+                      <div
+                        key={conv.id}
+                        onClick={() => handleSelectConversation(conv.customerPhone)}
+                        style={{
+                          padding: "12px 14px",
+                          borderBottom: "1px solid #f1f5f9",
+                          backgroundColor: isSelected
+                            ? "#f0fdf4"
+                            : hasUnread
+                            ? "#fafafa"
+                            : "#ffffff",
+                          borderLeft: isSelected
+                            ? "4px solid #16a34a"
+                            : "4px solid transparent",
+                          cursor: "pointer",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        <InlineStack align="space-between" blockAlign="start">
+                          <InlineStack gap="200" blockAlign="center">
+                            <Avatar
+                              name={conv.customerName || conv.customerPhone}
+                              size="sm"
+                            />
+                            <div>
+                              <Text
+                                as="span"
+                                variant="bodySm"
+                                fontWeight={isSelected || hasUnread ? "bold" : "regular"}
+                              >
+                                {conv.customerName || "Customer"}
+                              </Text>
+                              {conv.lastOrderNumber && (
+                                <Tag size="small">{conv.lastOrderNumber}</Tag>
                               )}
                             </div>
+                          </InlineStack>
+
+                          <InlineStack gap="100" blockAlign="center">
+                            <Text as="span" variant="bodyXs" tone="subdued">
+                              {new Date(conv.lastMessageAt).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </Text>
+                            {hasUnread && (
+                              <span
+                                style={{
+                                  backgroundColor: "#eab308",
+                                  color: "#000",
+                                  borderRadius: "10px",
+                                  padding: "1px 6px",
+                                  fontSize: "11px",
+                                  fontWeight: "bold",
+                                }}
+                              >
+                                {conv.unreadCount}
+                              </span>
+                            )}
+                          </InlineStack>
+                        </InlineStack>
+
+                        <div style={{ marginTop: "4px", paddingLeft: "36px" }}>
+                          <Text as="p" variant="bodyXs" tone="subdued" truncate>
+                            {conv.lastMessageText || "New conversation"}
+                          </Text>
+                          <div style={{ marginTop: "3px" }}>
+                            {cswActive ? (
+                              <Badge tone="success" size="small">
+                                🟢 24h Window Open (Free)
+                              </Badge>
+                            ) : (
+                              <Badge tone="info" size="small">
+                                Template Reach
+                              </Badge>
+                            )}
                           </div>
-                        );
-                      })}
-                    </BlockStack>
-                  )}
-                </div>
-              </BlockStack>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </Card>
           </Layout.Section>
 
-          {/* Right Column: Chat History & Real-Time Reply Box */}
+          {/* Right Area: Active Chat Feed & Media Attachment Bar */}
           <Layout.Section>
             {activeConversation ? (
               <Card padding="0">
-                {/* Chat Header */}
+                {/* Active Chat Header */}
                 <div
                   style={{
-                    padding: "16px 20px",
+                    padding: "14px 20px",
                     borderBottom: "1px solid #e2e8f0",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
                     backgroundColor: "#f8fafc",
                   }}
                 >
-                  <InlineStack gap="300" blockAlign="center">
-                    <Avatar
-                      customer
-                      size="lg"
-                      name={activeConversation.customerName || activeConversation.customerPhone}
-                    />
-                    <div>
-                      <Text as="h3" variant="headingMd">
-                        {activeConversation.customerName || `Customer (+${activeConversation.customerPhone})`}
-                      </Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Phone: +{activeConversation.customerPhone}
-                        {activeConversation.lastOrderNumber && ` • Order: ${activeConversation.lastOrderNumber}`}
-                      </Text>
-                    </div>
-                  </InlineStack>
+                  <InlineStack align="space-between" blockAlign="center">
+                    <InlineStack gap="300" blockAlign="center">
+                      <Avatar
+                        name={activeConversation.customerName || activeConversation.customerPhone}
+                        size="md"
+                      />
+                      <div>
+                        <Text as="h2" variant="headingSm">
+                          {activeConversation.customerName || "Customer"}
+                        </Text>
+                        <Text as="p" variant="bodyXs" tone="subdued">
+                          Phone: +{activeConversation.customerPhone}
+                          {activeConversation.lastOrderNumber &&
+                            ` • Order: ${activeConversation.lastOrderNumber}`}
+                        </Text>
+                      </div>
+                    </InlineStack>
 
-                  <div>
-                    {isCSWOpen ? (
-                      <Badge tone="success">🟢 24h Service Window Active (Free Replies)</Badge>
-                    ) : (
-                      <Badge tone="warning">⚠️ Customer Service Window Closed</Badge>
-                    )}
-                  </div>
+                    <InlineStack gap="200">
+                      {isInsideCSW ? (
+                        <Badge tone="success">🟢 24h Service Window Active (Free Replies)</Badge>
+                      ) : (
+                        <Tooltip content="More than 24h since customer's last message. StorePing will deliver via pre-approved template.">
+                          <Badge tone="attention">⚠️ Template Outreach Mode</Badge>
+                        </Tooltip>
+                      )}
+                    </InlineStack>
+                  </InlineStack>
                 </div>
 
-                {/* Messages Feed */}
+                {/* Message Bubble Stream */}
                 <div
                   style={{
-                    backgroundColor: "#efeae2",
-                    padding: "20px",
-                    height: "440px",
+                    height: "460px",
                     overflowY: "auto",
+                    padding: "20px",
+                    backgroundColor: "#efeae2",
                     display: "flex",
                     flexDirection: "column",
                     gap: "12px",
                   }}
                 >
-                  {activeConversation.messages?.map((msg: any) => {
+                  {activeConversation.messages.map((msg) => {
                     const isCustomer = msg.sender === "CUSTOMER";
                     const isMerchant = msg.sender === "MERCHANT";
+                    const isImage = msg.messageType === "IMAGE" || (msg.mimeType && msg.mimeType.startsWith("image/")) || (msg.mediaUrl && msg.mediaUrl.match(/\.(jpeg|jpg|png|webp|gif)/i));
+                    const isVideo = msg.messageType === "VIDEO" || (msg.mimeType && msg.mimeType.startsWith("video/"));
+                    const isDocument = msg.messageType === "DOCUMENT" || msg.mimeType === "application/pdf";
+                    const isAudio = msg.messageType === "AUDIO" || (msg.mimeType && msg.mimeType.startsWith("audio/"));
+                    const mediaSrc = msg.mediaUrl || (msg.mediaId ? `/api/meta/media?mediaId=${msg.mediaId}` : null);
 
                     return (
                       <div
@@ -592,23 +643,92 @@ export default function WhatsAppInboxPage() {
                             fontSize: "10px",
                             fontWeight: 600,
                             color: isCustomer ? "#0284c7" : isMerchant ? "#15803d" : "#475569",
-                            marginBottom: "3px",
+                            marginBottom: "4px",
                           }}
                         >
                           {isCustomer ? "👤 Customer" : isMerchant ? "🧑‍💼 Support Staff" : "🤖 Store Automation"}
                         </div>
 
-                        <div
-                          style={{
-                            fontSize: "13px",
-                            lineHeight: "1.4",
-                            color: "#1e293b",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                          }}
-                        >
-                          {msg.bodyText}
-                        </div>
+                        {/* Media: Image Rendering */}
+                        {isImage && mediaSrc && (
+                          <div style={{ marginBottom: "6px", borderRadius: "8px", overflow: "hidden", maxWidth: "320px" }}>
+                            <a href={mediaSrc} target="_blank" rel="noopener noreferrer">
+                              <img
+                                src={mediaSrc}
+                                alt={msg.caption || "Customer WhatsApp Image"}
+                                style={{
+                                  width: "100%",
+                                  maxHeight: "280px",
+                                  objectFit: "cover",
+                                  display: "block",
+                                  borderRadius: "8px",
+                                  cursor: "pointer",
+                                }}
+                              />
+                            </a>
+                          </div>
+                        )}
+
+                        {/* Media: Video Rendering */}
+                        {isVideo && mediaSrc && (
+                          <div style={{ marginBottom: "6px", borderRadius: "8px", overflow: "hidden", maxWidth: "320px" }}>
+                            <video
+                              controls
+                              src={mediaSrc}
+                              style={{ width: "100%", maxHeight: "260px", borderRadius: "8px", display: "block" }}
+                            />
+                          </div>
+                        )}
+
+                        {/* Media: Document Rendering (PDF, Invoice, Receipt) */}
+                        {isDocument && mediaSrc && (
+                          <div style={{ marginBottom: "6px" }}>
+                            <a
+                              href={`${mediaSrc}&download=true`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "10px",
+                                padding: "8px 12px",
+                                background: "#f8fafc",
+                                borderRadius: "8px",
+                                border: "1px solid #e2e8f0",
+                                textDecoration: "none",
+                                color: "#0f172a",
+                              }}
+                            >
+                              <span style={{ fontSize: "22px" }}>📄</span>
+                              <div>
+                                <div style={{ fontSize: "12px", fontWeight: 600 }}>{msg.caption || "View Attached Document"}</div>
+                                <div style={{ fontSize: "10px", color: "#64748b" }}>Click to download file</div>
+                              </div>
+                            </a>
+                          </div>
+                        )}
+
+                        {/* Media: Audio / Voice Note */}
+                        {isAudio && mediaSrc && (
+                          <div style={{ marginBottom: "6px" }}>
+                            <audio controls src={mediaSrc} style={{ width: "100%", maxWidth: "260px" }} />
+                          </div>
+                        )}
+
+                        {/* Text / Caption */}
+                        {msg.bodyText && (!isImage || msg.bodyText !== "📷 Photo") && (!isVideo || msg.bodyText !== "🎥 Video") && (
+                          <div
+                            style={{
+                              fontSize: "13px",
+                              lineHeight: "1.4",
+                              color: "#1e293b",
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {msg.bodyText}
+                          </div>
+                        )}
 
                         <div
                           style={{
@@ -634,45 +754,93 @@ export default function WhatsAppInboxPage() {
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Reply Composer Bar */}
-                <div style={{ padding: "16px 20px", borderTop: "1px solid #e2e8f0", backgroundColor: "#ffffff" }}>
+                {/* Reply Composer Bar with Media Attachment */}
+                <div style={{ padding: "14px 20px", borderTop: "1px solid #e2e8f0", backgroundColor: "#ffffff" }}>
                   <BlockStack gap="300">
-                    {/* Quick Response Chips */}
-                    <InlineStack gap="200" wrap>
-                      <div
-                        onClick={() => setReplyText("Hello! Thank you for contacting us. How can we help you today? 😊")}
-                        style={{ cursor: "pointer" }}
+                    {/* Quick Response Chips & Attach Button */}
+                    <InlineStack gap="200" align="space-between" wrap>
+                      <InlineStack gap="150" wrap>
+                        <div
+                          onClick={() => setReplyText("Hello! Thank you for contacting us. How can we help you today? 😊")}
+                          style={{ cursor: "pointer" }}
+                        >
+                          <Tag>👋 Greeting</Tag>
+                        </div>
+                        <div
+                          onClick={() =>
+                            setReplyText(
+                              "Great news! Your order is being processed and will be shipped within 24 hours. 🚚"
+                            )
+                          }
+                          style={{ cursor: "pointer" }}
+                        >
+                          <Tag>🚚 Order Update</Tag>
+                        </div>
+                        <div
+                          onClick={() =>
+                            setReplyText(
+                              "Here is a special 10% discount code for your next order: SAVE10 🎁"
+                            )
+                          }
+                          style={{ cursor: "pointer" }}
+                        >
+                          <Tag>🎁 Offer Code</Tag>
+                        </div>
+                      </InlineStack>
+
+                      <Button
+                        size="slim"
+                        variant={showMediaInput ? "primary" : "secondary"}
+                        onClick={() => setShowMediaInput(!showMediaInput)}
                       >
-                        <Tag>👋 Greeting</Tag>
-                      </div>
-                      <div
-                        onClick={() =>
-                          setReplyText(
-                            "Great news! Your order is being processed and will be shipped within 24 hours. 🚚"
-                          )
-                        }
-                        style={{ cursor: "pointer" }}
-                      >
-                        <Tag>🚚 Order Update</Tag>
-                      </div>
-                      <div
-                        onClick={() =>
-                          setReplyText(
-                            "Here is a special 10% discount code for your next order: SAVE10 🎁"
-                          )
-                        }
-                        style={{ cursor: "pointer" }}
-                      >
-                        <Tag>🎁 Offer Code</Tag>
-                      </div>
+                        {showMediaInput ? "✕ Close Attachment" : "📷 Attach Image / File"}
+                      </Button>
                     </InlineStack>
 
+                    {/* Media Attachment Input Drawer */}
+                    {showMediaInput && (
+                      <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+                        <BlockStack gap="200">
+                          <Text as="p" variant="bodyXs" fontWeight="semibold">
+                            Attach Public Image / Document URL (e.g. Shopify Files CDN URL):
+                          </Text>
+                          <InlineStack gap="200" align="space-between">
+                            <div style={{ flex: 1 }}>
+                              <TextField
+                                label="Media URL"
+                                labelHidden
+                                placeholder="https://cdn.shopify.com/s/files/.../item.jpg"
+                                value={replyMediaUrl}
+                                onChange={setReplyMediaUrl}
+                                autoComplete="off"
+                              />
+                            </div>
+                            <select
+                              value={mediaType}
+                              onChange={(e) => setMediaType(e.target.value as any)}
+                              style={{
+                                padding: "6px 10px",
+                                borderRadius: "8px",
+                                border: "1px solid #cbd5e1",
+                                fontSize: "13px",
+                              }}
+                            >
+                              <option value="IMAGE">📷 Image</option>
+                              <option value="VIDEO">🎥 Video</option>
+                              <option value="DOCUMENT">📄 PDF / Doc</option>
+                            </select>
+                          </InlineStack>
+                        </BlockStack>
+                      </Box>
+                    )}
+
+                    {/* Text Reply Input */}
                     <div style={{ display: "flex", gap: "10px", alignItems: "flex-end" }}>
                       <div style={{ flex: 1 }}>
                         <TextField
                           label="Type WhatsApp Reply"
                           labelHidden
-                          placeholder="Type your WhatsApp reply to this customer..."
+                          placeholder={replyMediaUrl ? "Add an optional caption for this image/file..." : "Type your WhatsApp reply to this customer..."}
                           value={replyText}
                           onChange={setReplyText}
                           multiline={2}
@@ -685,7 +853,7 @@ export default function WhatsAppInboxPage() {
                         onClick={handleSendReply}
                         loading={isSubmitting}
                       >
-                        Send Reply
+                        {replyMediaUrl ? "Send Media" : "Send Reply"}
                       </Button>
                     </div>
                   </BlockStack>
