@@ -698,7 +698,7 @@ export default function OrdersManualPage() {
     <div key={`conf-${order.id}`}>
       {renderConfirmationBadge(order)}
     </div>,
-    <InlineStack gap="150" key={`actions-${order.id}`}>
+    <div key={`actions-${order.id}`}>
       <Button
         size="slim"
         variant="primary"
@@ -706,26 +706,7 @@ export default function OrdersManualPage() {
       >
         📲 Send WhatsApp
       </Button>
-      {order.phone && (
-        <Button
-          size="slim"
-          onClick={() => navigate(`/app/inbox?phone=${order.phone.replace(/[^0-9]/g, "")}`)}
-        >
-          💬 Chat
-        </Button>
-      )}
-      {(order.confirmationStatus === "UPDATE_REQUESTED" || order.confirmationStatus === "CONFIRMED") && (
-        <Tooltip content="Sync confirmation tag & customer's address note directly into Shopify Admin Order">
-          <Button
-            size="slim"
-            onClick={() => handleSyncToShopify(order)}
-            loading={isSubmitting}
-          >
-            {order.confirmationStatus === "UPDATE_REQUESTED" ? "📝 Push to Shopify" : "🔄 Sync Shopify"}
-          </Button>
-        </Tooltip>
-      )}
-    </InlineStack>,
+    </div>,
   ]);
 
   const cartRows = filteredCarts.map((cart: any) => [
@@ -742,23 +723,15 @@ export default function OrdersManualPage() {
     <Text as="span" variant="bodyXs" tone="subdued" key={`date-${cart.id}`}>
       {new Date(cart.createdAt).toLocaleDateString()}
     </Text>,
-    <InlineStack gap="150" key={`actions-${cart.id}`}>
+    <div key={`actions-${cart.id}`}>
       <Button
         size="slim"
         variant="primary"
         onClick={() => handleOpenCartModal(cart)}
       >
-        🛒 1-Click Recovery
+        🛒 Send WhatsApp
       </Button>
-      {cart.customerPhone && (
-        <Button
-          size="slim"
-          onClick={() => navigate(`/app/inbox?phone=${cart.customerPhone.replace(/[^0-9]/g, "")}`)}
-        >
-          💬 Chat
-        </Button>
-      )}
-    </InlineStack>,
+    </div>,
   ]);
 
   return (
@@ -836,7 +809,7 @@ export default function OrdersManualPage() {
                 ) : (
                   <DataTable
                     columnContentTypes={["text", "text", "text", "text", "text", "text", "text"]}
-                    headings={["Order", "Customer & Address", "Mobile Phone", "Total", "Payment", "Address Confirmation", "1-Click Actions"]}
+                    headings={["Order", "Customer & Address", "Mobile Phone", "Total", "Payment", "Address Confirmation", "Action"]}
                     rows={orderRows}
                   />
                 )
@@ -860,7 +833,7 @@ export default function OrdersManualPage() {
               ) : (
                 <DataTable
                   columnContentTypes={["text", "text", "text", "text", "text", "text"]}
-                  headings={["Customer", "Mobile Phone", "Cart Value", "Status", "Date", "1-Click Recovery"]}
+                  headings={["Customer", "Mobile Phone", "Cart Value", "Status", "Date", "Action"]}
                   rows={cartRows}
                 />
               )}
@@ -873,27 +846,53 @@ export default function OrdersManualPage() {
       <Modal
         open={isOrderModalOpen}
         onClose={() => setIsOrderModalOpen(false)}
-        title={`📲 Send WhatsApp Notification for ${selectedOrder?.orderNumber || "Order"}`}
+        title={`📲 WhatsApp Outreach • ${selectedOrder?.orderNumber || "Order"}`}
         primaryAction={{
-          content: "🚀 Send WhatsApp Message",
+          content: "🚀 Dispatch WhatsApp Message",
           onAction: handleSendOrderWhatsApp,
           loading: isSubmitting,
         }}
         secondaryActions={[
           {
-            content: "Cancel",
+            content: "Close",
             onAction: () => setIsOrderModalOpen(false),
           },
         ]}
       >
         <Modal.Section>
           <FormLayout>
-            <InlineStack align="space-between">
-              <Text as="p" variant="bodySm">
-                Customer: <b>{selectedOrder?.customerName}</b> • Total: <b>{selectedOrder?.total}</b>
-              </Text>
-              {selectedOrder?.isDraft && <Badge tone="info">Draft Order</Badge>}
-            </InlineStack>
+            {/* Quick Actions Header Bar */}
+            <Box background="bg-surface-secondary" padding="300" borderRadius="200" borderWidth="025" borderColor="border">
+              <InlineStack align="space-between" blockAlign="center" wrap={false}>
+                <BlockStack gap="050">
+                  <Text as="p" variant="bodySm" fontWeight="bold">
+                    {selectedOrder?.customerName} • {selectedOrder?.orderNumber}
+                  </Text>
+                  <Text as="p" variant="bodyXs" tone="subdued">
+                    Total: {selectedOrder?.total} {selectedOrder?.isDraft ? "• Draft Order" : ""}
+                  </Text>
+                </BlockStack>
+                <InlineStack gap="200">
+                  {selectedOrder?.phone && (
+                    <Button
+                      size="slim"
+                      onClick={() => navigate(`/app/inbox?phone=${selectedOrder.phone.replace(/[^0-9]/g, "")}`)}
+                    >
+                      💬 Open Chat
+                    </Button>
+                  )}
+                  {(selectedOrder?.confirmationStatus === "UPDATE_REQUESTED" || selectedOrder?.confirmationStatus === "CONFIRMED") && (
+                    <Button
+                      size="slim"
+                      onClick={() => handleSyncToShopify(selectedOrder)}
+                      loading={isSubmitting}
+                    >
+                      {selectedOrder.confirmationStatus === "UPDATE_REQUESTED" ? "📝 Push Note to Shopify" : "🔄 Sync Shopify"}
+                    </Button>
+                  )}
+                </InlineStack>
+              </InlineStack>
+            </Box>
 
             <Select
               label="Select WhatsApp Notification Template"
