@@ -437,6 +437,41 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   }
 
+  // 4. 1-Click Sync All Confirmed / Updated Orders to Shopify Admin
+  if (intent === "syncAllOrders") {
+    const confirmations = await db.orderConfirmation.findMany({
+      where: {
+        merchantId: merchant.id,
+        status: { in: ["CONFIRMED", "UPDATE_REQUESTED"] },
+      },
+    });
+
+    let syncedCount = 0;
+    for (const conf of confirmations) {
+      try {
+        const syncRes = await syncOrderUpdateToShopify({
+          shop,
+          orderId: conf.orderId,
+          orderNumber: conf.orderNumber,
+          status: conf.status as any,
+          customerNotes: conf.customerNotes,
+        });
+        if (syncRes.success) {
+          syncedCount++;
+        }
+      } catch (e) {
+        // continue syncing next order
+      }
+    }
+
+    return json<ActionData>({
+      success: true,
+      message: syncedCount > 0
+        ? `Successfully synced ${syncedCount} orders and address notes to Shopify Admin! 🚀`
+        : "All orders and address notes are already up to date in Shopify Admin! ✓",
+    });
+  }
+
   return json<ActionData>({ success: true });
 }
 
@@ -476,6 +511,12 @@ export default function OrdersManualPage() {
     form.append("orderNumber", order.orderNumber);
     form.append("status", order.confirmationStatus);
     form.append("customerNotes", order.customerNotes || "");
+    fetcher.submit(form, { method: "POST" });
+  };
+
+  const handleSyncAllOrders = () => {
+    const form = new FormData();
+    form.append("intent", "syncAllOrders");
     fetcher.submit(form, { method: "POST" });
   };
 
@@ -739,6 +780,11 @@ export default function OrdersManualPage() {
       fullWidth
       title="Orders"
       subtitle="Send WhatsApp confirmations, address verifications, and recovery alerts."
+      primaryAction={{
+        content: "🔄 1-Click Sync All to Shopify",
+        onAction: handleSyncAllOrders,
+        loading: isSubmitting && fetcher.formData?.get("intent") === "syncAllOrders",
+      }}
     >
       <BlockStack gap="400">
 
@@ -755,9 +801,9 @@ export default function OrdersManualPage() {
         )}
 
         <Card padding="0">
-          {/* Instant Client-Side Search Bar */}
-          <div style={{ padding: "12px 16px", borderBottom: "1px solid #e1e3e5", display: "flex", gap: "12px", alignItems: "center" }}>
-            <div style={{ flex: 1 }}>
+          {/* Instant Client-Side Search Bar & 1-Click Sync Header */}
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid #e1e3e5", display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 300px" }}>
               <TextField
                 label="Search orders"
                 labelHidden
@@ -770,16 +816,25 @@ export default function OrdersManualPage() {
                 onClearButtonClick={() => setSearchQuery("")}
               />
             </div>
-            {searchQuery && (
-              <InlineStack gap="200" blockAlign="center">
-                <Badge tone="info">
-                  {selectedTab <= 2 ? `${filteredOrders.length} found` : `${filteredCarts.length} found`}
-                </Badge>
-                <Button size="slim" onClick={() => setSearchQuery("")}>
-                  Clear
-                </Button>
-              </InlineStack>
-            )}
+            <InlineStack gap="200" blockAlign="center">
+              {searchQuery && (
+                <>
+                  <Badge tone="info">
+                    {selectedTab <= 2 ? `${filteredOrders.length} found` : `${filteredCarts.length} found`}
+                  </Badge>
+                  <Button size="slim" onClick={() => setSearchQuery("")}>
+                    Clear
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="primary"
+                loading={isSubmitting && fetcher.formData?.get("intent") === "syncAllOrders"}
+                onClick={handleSyncAllOrders}
+              >
+                🔄 1-Click Sync All Orders
+              </Button>
+            </InlineStack>
           </div>
 
           <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
