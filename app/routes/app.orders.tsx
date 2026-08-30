@@ -22,7 +22,7 @@ import {
   Divider,
   Icon,
 } from "@shopify/polaris";
-import { CheckIcon, AlertCircleIcon, ChatIcon, SendIcon } from "@shopify/polaris-icons";
+import { CheckIcon, AlertCircleIcon, ChatIcon, SendIcon, SearchIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
@@ -447,6 +447,7 @@ export default function OrdersManualPage() {
   const navigate = useNavigate();
 
   const [selectedTab, setSelectedTab] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Modal State for Unified Order WhatsApp Send
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
@@ -546,13 +547,62 @@ export default function OrdersManualPage() {
     return { body, header, buttons };
   }, [selectedOrder, activeModalTemplate, customPhone, shop, merchant]);
 
-  // Filter orders by active tab
+  // Instant Client-Side Filter: Tabs + Search Query (Order #, Name, Mobile, Address, Notes)
   const filteredOrders = useMemo(() => {
-    if (selectedTab === 0) return orders; // All
-    if (selectedTab === 1) return orders.filter((o: any) => o.confirmationStatus === "CONFIRMED");
-    if (selectedTab === 2) return orders.filter((o: any) => o.confirmationStatus === "UPDATE_REQUESTED");
-    return orders;
-  }, [orders, selectedTab]);
+    let list = orders;
+    if (selectedTab === 1) list = list.filter((o: any) => o.confirmationStatus === "CONFIRMED");
+    if (selectedTab === 2) list = list.filter((o: any) => o.confirmationStatus === "UPDATE_REQUESTED");
+
+    if (!searchQuery.trim()) return list;
+
+    const q = searchQuery.trim().toLowerCase();
+    const cleanDigits = q.replace(/[^0-9]/g, "");
+    const cleanAlphaNum = q.replace(/[^a-z0-9]/g, "");
+
+    return list.filter((o: any) => {
+      const orderNum = (o.orderNumber || "").toLowerCase();
+      const cleanOrderNum = orderNum.replace(/[^a-z0-9]/g, "");
+      const custName = (o.customerName || "").toLowerCase();
+      const phone = (o.phone || "").toLowerCase();
+      const cleanPhone = phone.replace(/[^0-9]/g, "");
+      const shipping = (o.shippingAddress || "").toLowerCase();
+      const notes = (o.customerNotes || "").toLowerCase();
+      const items = (o.items || "").toLowerCase();
+
+      return (
+        orderNum.includes(q) ||
+        (cleanAlphaNum.length > 0 && cleanOrderNum.includes(cleanAlphaNum)) ||
+        custName.includes(q) ||
+        phone.includes(q) ||
+        (cleanDigits.length > 0 && cleanPhone.includes(cleanDigits)) ||
+        shipping.includes(q) ||
+        notes.includes(q) ||
+        items.includes(q)
+      );
+    });
+  }, [orders, selectedTab, searchQuery]);
+
+  // Instant Client-Side Filter for Abandoned Carts
+  const filteredCarts = useMemo(() => {
+    if (!searchQuery.trim()) return abandonedCarts;
+
+    const q = searchQuery.trim().toLowerCase();
+    const cleanDigits = q.replace(/[^0-9]/g, "");
+
+    return abandonedCarts.filter((c: any) => {
+      const name = (c.customerName || "").toLowerCase();
+      const phone = (c.customerPhone || "").toLowerCase();
+      const cleanPhone = phone.replace(/[^0-9]/g, "");
+      const email = (c.customerEmail || "").toLowerCase();
+
+      return (
+        name.includes(q) ||
+        phone.includes(q) ||
+        (cleanDigits.length > 0 && cleanPhone.includes(cleanDigits)) ||
+        email.includes(q)
+      );
+    });
+  }, [abandonedCarts, searchQuery]);
 
   const confirmedCount = orders.filter((o: any) => o.confirmationStatus === "CONFIRMED").length;
   const updateReqCount = orders.filter((o: any) => o.confirmationStatus === "UPDATE_REQUESTED").length;
@@ -659,7 +709,7 @@ export default function OrdersManualPage() {
     </InlineStack>,
   ]);
 
-  const cartRows = abandonedCarts.map((cart: any) => [
+  const cartRows = filteredCarts.map((cart: any) => [
     <Text as="span" variant="bodySm" fontWeight="bold" key={cart.id}>
       {cart.customerName || "Customer"}
     </Text>,
@@ -724,18 +774,56 @@ export default function OrdersManualPage() {
         )}
 
         <Card padding="0">
+          {/* Instant Client-Side Search Bar */}
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid #e1e3e5", display: "flex", gap: "12px", alignItems: "center" }}>
+            <div style={{ flex: 1 }}>
+              <TextField
+                label="Search orders"
+                labelHidden
+                prefix={<Icon source={SearchIcon} />}
+                placeholder="Live search by order ID (e.g. #1001), customer name, or mobile number (+91)..."
+                value={searchQuery}
+                onChange={setSearchQuery}
+                autoComplete="off"
+                clearButton
+                onClearButtonClick={() => setSearchQuery("")}
+              />
+            </div>
+            {searchQuery && (
+              <InlineStack gap="200" blockAlign="center">
+                <Badge tone="info">
+                  {selectedTab <= 2 ? `${filteredOrders.length} found` : `${filteredCarts.length} found`}
+                </Badge>
+                <Button size="slim" onClick={() => setSearchQuery("")}>
+                  Clear
+                </Button>
+              </InlineStack>
+            )}
+          </div>
+
           <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
             <Box padding="300">
               {selectedTab <= 2 ? (
                 orderRows.length === 0 ? (
                   <Box padding="600">
-                    <Text as="p" tone="subdued" alignment="center">
-                      {selectedTab === 1
-                        ? "No confirmed orders yet. Once customers tap 'Confirm Address' on WhatsApp, they will appear here!"
-                        : selectedTab === 2
-                        ? "No address update requests found."
-                        : "No orders found in Shopify yet."}
-                    </Text>
+                    <BlockStack gap="200" align="center">
+                      <Text as="p" tone="subdued" alignment="center">
+                        {searchQuery
+                          ? `No orders match "${searchQuery}". Try searching by order #, mobile, or name.`
+                          : selectedTab === 1
+                          ? "No confirmed orders yet. Once customers tap 'Confirm Address' on WhatsApp, they will appear here!"
+                          : selectedTab === 2
+                          ? "No address update requests found."
+                          : "No orders found in Shopify yet."}
+                      </Text>
+                      {searchQuery && (
+                        <div style={{ display: "flex", justifyContent: "center" }}>
+                          <Button size="slim" onClick={() => setSearchQuery("")}>
+                            Reset Search
+                          </Button>
+                        </div>
+                      )}
+                    </BlockStack>
                   </Box>
                 ) : (
                   <DataTable
@@ -746,9 +834,20 @@ export default function OrdersManualPage() {
                 )
               ) : cartRows.length === 0 ? (
                 <Box padding="600">
-                  <Text as="p" tone="subdued" alignment="center">
-                    No abandoned checkouts recorded yet. When a customer leaves items in checkout, they will appear here!
-                  </Text>
+                  <BlockStack gap="200" align="center">
+                    <Text as="p" tone="subdued" alignment="center">
+                      {searchQuery
+                        ? `No abandoned checkouts match "${searchQuery}".`
+                        : "No abandoned checkouts recorded yet. When a customer leaves items in checkout, they will appear here!"}
+                    </Text>
+                    {searchQuery && (
+                      <div style={{ display: "flex", justifyContent: "center" }}>
+                        <Button size="slim" onClick={() => setSearchQuery("")}>
+                          Reset Search
+                        </Button>
+                      </div>
+                    )}
+                  </BlockStack>
                 </Box>
               ) : (
                 <DataTable
