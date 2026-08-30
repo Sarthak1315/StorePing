@@ -169,25 +169,94 @@ export const action = async (args: ActionFunctionArgs) => {
           break;
         }
 
-        const orderNumber = String(data.order_number || data.name || data.id);
+        const rawOrderNum = String(data.order_number || data.name || data.id);
+        const orderNumber = rawOrderNum.startsWith("#") ? rawOrderNum : `#${rawOrderNum}`;
         const customerName = data.customer?.first_name || data.shipping_address?.first_name || "Valued Customer";
         const totalAmount = parseFloat(data.total_price || "0").toFixed(2);
         const orderUrl = data.order_status_url || `https://${shop}/account/orders`;
 
-        // Enqueue immediate order confirmation alert
+        // Format Complete Shipping Address
+        const addr = data.shipping_address || data.billing_address || {};
+        const addressParts = [
+          addr.name || customerName,
+          addr.address1,
+          addr.address2,
+          addr.city,
+          addr.province,
+          addr.zip,
+          addr.country,
+        ].filter(Boolean);
+        const formattedAddress = addressParts.length > 0 ? addressParts.join(", ") : "Customer Shipping Address";
+
+        // Extract Line Items
+        const itemsSummary = (data.line_items || [])
+          .map((i: any) => `${i.title} (x${i.quantity})`)
+          .join(", ") || "Ordered Items";
+
+        // Create or update OrderConfirmation tracking record
+        try {
+          await db.orderConfirmation.upsert({
+            where: {
+              merchantId_orderNumber: {
+                merchantId: merchant.id,
+                orderNumber,
+              },
+            },
+            create: {
+              merchantId: merchant.id,
+              orderId: String(data.id),
+              orderNumber,
+              customerPhone,
+              customerName,
+              totalAmount,
+              currency: data.currency || merchant.currency,
+              shippingAddress: formattedAddress,
+              itemsSummary,
+              status: "PENDING",
+              lastSentAt: new Date(),
+            },
+            update: {
+              orderId: String(data.id),
+              customerPhone,
+              customerName,
+              totalAmount,
+              currency: data.currency || merchant.currency,
+              shippingAddress: formattedAddress,
+              itemsSummary,
+              lastSentAt: new Date(),
+            },
+          });
+        } catch (dbErr: any) {
+          console.warn("OrderConfirmation record creation notice:", dbErr);
+        }
+
+        // Check if merchant has active ORDER_CONFIRM_ADDRESS template
+        const hasAddressTpl = await db.template.findFirst({
+          where: { merchantId: merchant.id, eventType: "ORDER_CONFIRM_ADDRESS", isActive: true },
+        });
+
+        const targetEventType = hasAddressTpl ? "ORDER_CONFIRM_ADDRESS" : "ORDER_CONFIRM";
+
+        // Enqueue immediate order & address confirmation alert
         await enqueueJob(
           merchant.id,
           "SEND_WHATSAPP",
           {
             recipientPhone: customerPhone,
             customerName,
-            eventType: "ORDER_CONFIRM",
+            eventType: targetEventType,
             orderId: String(data.id),
             templateVariables: {
               customer_name: customerName,
-              order_number: orderNumber,
+              order_number: orderNumber.replace(/^#/, ""),
+              order_name: orderNumber,
               total_amount: totalAmount,
+              total_price: totalAmount,
               currency: data.currency || merchant.currency,
+              cart_items: itemsSummary,
+              items: itemsSummary,
+              shipping_address: formattedAddress,
+              customer_phone: customerPhone,
               tracking_url: orderUrl,
               store_name: merchant.name || shop.replace(".myshopify.com", ""),
             },
@@ -195,7 +264,7 @@ export const action = async (args: ActionFunctionArgs) => {
           0 // Immediate
         );
 
-        await logInfo(`Enqueued order confirmation for Order #${orderNumber} to +${customerPhone}`, { shop, source: "webhook" });
+        await logInfo(`Enqueued order & address confirmation for Order ${orderNumber} to +${customerPhone}`, { shop, source: "webhook" });
 
         // Process immediately for instant customer delivery
         try {

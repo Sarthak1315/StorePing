@@ -85,26 +85,29 @@ model Merchant {
   messages               MessageLog[]
   cartRecoveries         CartRecovery[]
   conversations          Conversation[]
+  orderConfirmations     OrderConfirmation[]
 
   @@map("storeping_Merchant")
 }
 
-// 3. Custom Visual Templates (7 Core Flows)
+// 3. Custom Visual Templates (Core Flows)
 model Template {
   id             String    @id @default(uuid())
   merchantId     String
   merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  eventType      String    // CART_RECOVERY_1, CART_RECOVERY_2, CART_RECOVERY_3, ORDER_CONFIRM, ORDER_SHIPPED, ORDER_DELIVERED, PROMOTION, WIN_BACK, SUPPORT_AUTO_REPLY
+  eventType      String    // ORDER_CONFIRM_ADDRESS, ORDER_CONFIRM, COD_CONFIRM, ORDER_SHIPPED, ORDER_DELIVERED, CART_RECOVERY_1, CART_RECOVERY_2, WIN_BACK, SUPPORT_AUTO_REPLY
   name           String
+  category       String?   @default("UTILITY") // UTILITY, MARKETING
   language       String    @default("en")
   headerType     String?   @default("NONE") // NONE, TEXT, IMAGE
   headerText     String?
   headerMediaUrl String?
   bodyText       String    @db.Text
   footerText     String?
-  buttonType     String?   @default("QUICK_REPLY") // NONE, QUICK_REPLY, CTA_URL
+  buttonType     String?   @default("QUICK_REPLY") // NONE, QUICK_REPLY, CTA_URL, MULTI_BUTTON
   buttonText     String?
   buttonUrl      String?
+  buttons        Json?     // Array of { id, text, type, url? } for interactive multi-button payloads
   isActive       Boolean   @default(true)
   metaTemplateId String?
   
@@ -113,6 +116,33 @@ model Template {
 
   @@index([merchantId, eventType])
   @@map("storeping_Template")
+}
+
+// 3.1 Order & Address Confirmation Lifecycle Record
+model OrderConfirmation {
+  id                 String    @id @default(uuid())
+  merchantId         String
+  merchant           Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orderId            String    // Shopify order ID or draft order ID
+  orderNumber        String    // e.g. "#1002"
+  customerPhone      String    // E.164 clean phone e.g. "919374626600"
+  customerName       String?
+  totalAmount        String?
+  currency           String    @default("INR")
+  shippingAddress    String?   @db.Text
+  itemsSummary       String?   @db.Text
+  status             String    @default("PENDING") // PENDING, CONFIRMED, UPDATE_REQUESTED, CANCELLED
+  confirmedAt        DateTime?
+  customerNotes      String?   @db.Text // Address or contact update notes from customer
+  lastSentAt         DateTime?
+  
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([merchantId, orderNumber])
+  @@index([merchantId, status])
+  @@index([merchantId, customerPhone])
+  @@map("storeping_OrderConfirmation")
 }
 
 // 4. PostgreSQL-Backed Async Job Queue (Zero-Cost Redis Alternative)

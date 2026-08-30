@@ -20,6 +20,7 @@ import {
   Modal,
   FormLayout,
   Tooltip,
+  Select,
 } from "@shopify/polaris";
 import {
   SearchIcon,
@@ -35,6 +36,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { sendWhatsAppMessage, subscribeWabaToWebhooks } from "../utils/meta-whatsapp.server";
 import { logInfo, logError } from "../utils/logger.server";
+import { interpolateVariables } from "../utils/template.shared";
 
 export type ChatMessageType = {
   id: string;
@@ -96,6 +98,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       );
     }
 
+    // Fetch active templates for the template picker modal
+    const templates = await db.template.findMany({
+      where: { merchantId: merchant.id, isActive: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    // Fetch all order confirmation status records
+    const confirmations = await db.orderConfirmation.findMany({
+      where: { merchantId: merchant.id },
+    });
+
     // Build optimized database search filter
     const whereClause: any = {
       merchantId: merchant.id,
@@ -131,6 +144,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       merchant,
       conversations,
       activeConversation,
+      templates,
+      confirmations,
       initialSelectedPhone: selectedPhone || activeConversation?.customerPhone || "",
       searchQuery,
       loadError: null as string | null,
@@ -141,6 +156,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       merchant: { id: "temp", shop, isWhatsAppConnected: false, displayPhoneNumber: null } as any,
       conversations: [] as ConversationType[],
       activeConversation: null as ConversationType | null,
+      templates: [] as any[],
+      confirmations: [] as any[],
       initialSelectedPhone: "",
       searchQuery,
       loadError: err.message as string | null,
@@ -192,7 +209,78 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  // 2. Start a New Conversation with Any Number
+  // 2. Direct Template Dispatch from Inbox
+  if (intent === "sendTemplate") {
+    const customerPhone = formData.get("customerPhone") as string;
+    const eventType = (formData.get("eventType") as string) || "ORDER_CONFIRM_ADDRESS";
+    const customerName = (formData.get("customerName") as string) || "Customer";
+    const orderNumber = (formData.get("orderNumber") as string) || "";
+
+    const template = await db.template.findFirst({
+      where: { merchantId: merchant.id, eventType },
+    });
+
+    if (!template) {
+      return json({ success: false, error: "Template not found.", messageId: null, newPhone: null }, { status: 400 });
+    }
+
+    const templateVariables = {
+      customer_name: customerName,
+      order_number: orderNumber.replace(/^#/, ""),
+      order_name: orderNumber || "#1001",
+      total_amount: "2,499.00",
+      total_price: "2,499.00",
+      currency: "INR",
+      shipping_address: "Customer Address",
+      customer_phone: customerPhone,
+      store_name: merchant.name || shop.replace(".myshopify.com", ""),
+      tracking_url: `https://${shop}/account/orders`,
+      discount_code: "SAVE10",
+      checkout_url: `https://${shop}`,
+    };
+
+    const interpolatedBody = interpolateVariables(template.bodyText, templateVariables);
+    const interpolatedHeader = interpolateVariables(template.headerText, templateVariables);
+    const buttons = (template.buttons as any[]) || [];
+    const cleanNum = orderNumber.replace(/[^a-zA-Z0-9]/g, "") || "1001";
+    const formattedButtons = buttons.map((b) => {
+      let btnId = b.id;
+      if (btnId === "confirm_order") btnId = `confirm_order_${cleanNum}`;
+      if (btnId === "update_address") btnId = `update_address_${cleanNum}`;
+      if (btnId === "support_query") btnId = `support_query_${cleanNum}`;
+      return { ...b, id: btnId };
+    });
+
+    try {
+      const result = await sendWhatsAppMessage({
+        merchantId: merchant.id,
+        recipientPhone: customerPhone,
+        customerName,
+        eventType,
+        bodyText: interpolatedBody,
+        headerType: template.headerType,
+        headerText: interpolatedHeader,
+        headerMediaUrl: template.headerMediaUrl,
+        footerText: template.footerText,
+        buttonType: template.buttonType,
+        buttonText: template.buttonText,
+        buttonUrl: template.buttonUrl,
+        buttons: formattedButtons.length > 0 ? formattedButtons : undefined,
+        senderRole: "MERCHANT",
+      });
+
+      if (!result.success) {
+        return json({ success: false, error: result.error || "Failed to send template message", messageId: null, newPhone: null }, { status: 500 });
+      }
+
+      await logInfo(`Template ${eventType} sent to ${customerPhone}`, { shop, source: "inbox" });
+      return json({ success: true, error: null, messageId: result.messageId, newPhone: null });
+    } catch (err: any) {
+      return json({ success: false, error: err.message, messageId: null, newPhone: null });
+    }
+  }
+
+  // 3. Start a New Conversation with Any Number
   if (intent === "startNewConversation") {
     let customerPhone = (formData.get("customerPhone") as string || "").trim();
     const customerName = (formData.get("customerName") as string || "").trim() || "Customer";
@@ -253,7 +341,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  // 3. Mark conversation as Read
+  // 4. Mark conversation as Read
   if (intent === "markRead") {
     const customerPhone = formData.get("customerPhone") as string;
     if (customerPhone) {
@@ -269,7 +357,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function LiveInboxPage() {
-  const { merchant, conversations, initialSelectedPhone, loadError } =
+  const { merchant, conversations, templates, confirmations, initialSelectedPhone, loadError } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -278,7 +366,7 @@ export default function LiveInboxPage() {
   // Instant 0ms Client State for Conversation Selection
   const [selectedPhone, setSelectedPhone] = useState<string>(initialSelectedPhone);
 
-  // Dual-Engine Search State (Engine 1: Keystroke filter, Engine 2: Database deep query)
+  // Dual-Engine Search State
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [replyText, setReplyText] = useState<string>("");
   const [replyMediaUrl, setReplyMediaUrl] = useState<string>("");
@@ -293,6 +381,10 @@ export default function LiveInboxPage() {
   const [newInitialMessage, setNewInitialMessage] = useState(
     "Hello! This is support. How can we assist you today? 😊"
   );
+
+  // "Send Template" Modal State
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [selectedTemplateEvent, setSelectedTemplateEvent] = useState("ORDER_CONFIRM_ADDRESS");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isSubmitting = fetcher.state !== "idle";
@@ -324,6 +416,17 @@ export default function LiveInboxPage() {
       null
     );
   }, [conversationsList, selectedPhone]);
+
+  // Confirmation Record for Active Conversation
+  const activeConfirmation = useMemo(() => {
+    if (!activeConversation) return null;
+    const list = confirmations || [];
+    return (
+      list.find((c: any) => c.customerPhone === activeConversation.customerPhone) ||
+      list.find((c: any) => activeConversation.lastOrderNumber && c.orderNumber === activeConversation.lastOrderNumber) ||
+      null
+    );
+  }, [activeConversation, confirmations]);
 
   // Keep URL in sync smoothly without triggering full reload
   const handleSelectConversation = (phone: string) => {
@@ -360,6 +463,7 @@ export default function LiveInboxPage() {
       setReplyText("");
       setReplyMediaUrl("");
       setShowMediaInput(false);
+      setIsTemplateModalOpen(false);
       if (fetcher.data.newPhone) {
         setSelectedPhone(fetcher.data.newPhone);
         setIsModalOpen(false);
@@ -389,6 +493,17 @@ export default function LiveInboxPage() {
     fetcher.submit(form, { method: "POST" });
   };
 
+  const handleSendTemplateSubmit = () => {
+    if (!activeConversation) return;
+    const form = new FormData();
+    form.append("intent", "sendTemplate");
+    form.append("customerPhone", activeConversation.customerPhone);
+    form.append("customerName", activeConversation.customerName || "Customer");
+    form.append("orderNumber", activeConversation.lastOrderNumber || "");
+    form.append("eventType", selectedTemplateEvent);
+    fetcher.submit(form, { method: "POST" });
+  };
+
   const handleStartNewChatSubmit = () => {
     if (!newPhone.trim() || !newInitialMessage.trim()) return;
     const form = new FormData();
@@ -414,7 +529,7 @@ export default function LiveInboxPage() {
   return (
     <Page
       title="Live Inbox & 2-Way Chat"
-      subtitle="Real-time 2-way customer WhatsApp conversations, photos, delivery complaints, and order support."
+      subtitle="Real-time 2-way customer WhatsApp conversations, address confirmations, photo attachments, and order support."
       primaryAction={{
         content: "➕ Start Chat with New Number",
         onAction: () => setIsModalOpen(true),
@@ -453,7 +568,7 @@ export default function LiveInboxPage() {
 
         {/* Main Inbox Container */}
         <Layout>
-          {/* Left Sidebar: Conversation Thread List with 0ms Keystroke Search */}
+          {/* Left Sidebar: Conversation Thread List */}
           <Layout.Section variant="oneThird">
             <Card padding="0">
               <div style={{ padding: "12px", borderBottom: "1px solid #e2e8f0" }}>
@@ -503,7 +618,7 @@ export default function LiveInboxPage() {
                       <Text as="p" tone="subdued" alignment="center">
                         {searchTerm
                           ? "No conversations match your search."
-                          : "No WhatsApp conversations yet. Use 'Start Chat' or send a test alert!"}
+                          : "No WhatsApp conversations yet. Use 'Start Chat' or send a message from Orders!"}
                       </Text>
                     </BlockStack>
                   </Box>
@@ -587,7 +702,7 @@ export default function LiveInboxPage() {
                           <div style={{ marginTop: "3px" }}>
                             {cswActive ? (
                               <Badge tone="success" size="small">
-                                🟢 24h Window Open (Free)
+                                🟢 24h Window Open
                               </Badge>
                             ) : (
                               <Badge tone="info" size="small">
@@ -604,7 +719,7 @@ export default function LiveInboxPage() {
             </Card>
           </Layout.Section>
 
-          {/* Right Area: Active Chat Feed & Media Attachment Bar */}
+          {/* Right Area: Active Chat Feed & Message Composer */}
           <Layout.Section>
             {activeConversation ? (
               <Card padding="0">
@@ -628,30 +743,48 @@ export default function LiveInboxPage() {
                         <Text as="h2" variant="headingSm">
                           {activeConversation.customerName || "Customer"}
                         </Text>
-                        <Text as="p" variant="bodyXs" tone="subdued">
-                          Phone: +{activeConversation.customerPhone}
-                          {activeConversation.lastOrderNumber &&
-                            ` • Order: ${activeConversation.lastOrderNumber}`}
-                        </Text>
+                        <InlineStack gap="150" blockAlign="center">
+                          <Text as="span" variant="bodyXs" tone="subdued">
+                            +{activeConversation.customerPhone}
+                          </Text>
+                          {activeConversation.lastOrderNumber && (
+                            <Tag>{activeConversation.lastOrderNumber}</Tag>
+                          )}
+                          {activeConfirmation?.status === "CONFIRMED" && (
+                            <Badge tone="success">✅ Address Confirmed</Badge>
+                          )}
+                          {activeConfirmation?.status === "UPDATE_REQUESTED" && (
+                            <Badge tone="critical">⚠️ Address Update Requested</Badge>
+                          )}
+                        </InlineStack>
                       </div>
                     </InlineStack>
 
-                    <InlineStack gap="200">
-                      {isInsideCSW ? (
-                        <Badge tone="success">🟢 24h Service Window Active (Free Replies)</Badge>
-                      ) : (
-                        <Tooltip content="More than 24h since customer's last message. StorePing will deliver via pre-approved template.">
-                          <Badge tone="attention">⚠️ Template Outreach Mode</Badge>
-                        </Tooltip>
-                      )}
+                    <InlineStack gap="200" blockAlign="center">
+                      <Button
+                        size="slim"
+                        variant="primary"
+                        onClick={() => setIsTemplateModalOpen(true)}
+                      >
+                        📋 Send Template Message
+                      </Button>
                     </InlineStack>
                   </InlineStack>
+
+                  {/* Customer Notes Banner (if they submitted updated address) */}
+                  {activeConfirmation?.customerNotes && (
+                    <div style={{ marginTop: "8px", padding: "8px 12px", backgroundColor: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "6px" }}>
+                      <Text as="p" variant="bodyXs" tone="caution">
+                        <b>📝 Customer's Address Correction Request:</b> "{activeConfirmation.customerNotes}"
+                      </Text>
+                    </div>
+                  )}
                 </div>
 
                 {/* Message Bubble Stream */}
                 <div
                   style={{
-                    height: "460px",
+                    height: "440px",
                     overflowY: "auto",
                     padding: "20px",
                     backgroundColor: "#efeae2",
@@ -690,7 +823,7 @@ export default function LiveInboxPage() {
                             marginBottom: "4px",
                           }}
                         >
-                          {isCustomer ? "👤 Customer" : isMerchant ? "🧑‍💼 Support Staff" : "🤖 Store Automation"}
+                          {isCustomer ? "👤 Customer" : isMerchant ? "🧑‍💼 StorePing Merchant" : "🤖 Store Automation"}
                         </div>
 
                         {/* Media: Image Rendering */}
@@ -724,7 +857,7 @@ export default function LiveInboxPage() {
                           </div>
                         )}
 
-                        {/* Media: Document Rendering (PDF, Invoice, Receipt) */}
+                        {/* Media: Document Rendering */}
                         {isDocument && mediaSrc && (
                           <div style={{ marginBottom: "6px" }}>
                             <a
@@ -798,7 +931,7 @@ export default function LiveInboxPage() {
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Reply Composer Bar with Media Attachment */}
+                {/* Reply Composer Bar with Media Attachment & Template Selector */}
                 <div style={{ padding: "14px 20px", borderTop: "1px solid #e2e8f0", backgroundColor: "#ffffff" }}>
                   <BlockStack gap="300">
                     {/* Quick Response Chips & Attach Button */}
@@ -813,12 +946,12 @@ export default function LiveInboxPage() {
                         <div
                           onClick={() =>
                             setReplyText(
-                              "Great news! Your order is being processed and will be shipped within 24 hours. 🚚"
+                              "Great news! Your order is being processed and will be shipped shortly. 🚚"
                             )
                           }
                           style={{ cursor: "pointer" }}
                         >
-                          <Tag>🚚 Order Update</Tag>
+                          <Tag>🚚 Order Status</Tag>
                         </div>
                         <div
                           onClick={() =>
@@ -832,13 +965,21 @@ export default function LiveInboxPage() {
                         </div>
                       </InlineStack>
 
-                      <Button
-                        size="slim"
-                        variant={showMediaInput ? "primary" : "secondary"}
-                        onClick={() => setShowMediaInput(!showMediaInput)}
-                      >
-                        {showMediaInput ? "✕ Close Attachment" : "📷 Attach Image / File"}
-                      </Button>
+                      <InlineStack gap="150">
+                        <Button
+                          size="slim"
+                          onClick={() => setIsTemplateModalOpen(true)}
+                        >
+                          📋 Template
+                        </Button>
+                        <Button
+                          size="slim"
+                          variant={showMediaInput ? "primary" : "secondary"}
+                          onClick={() => setShowMediaInput(!showMediaInput)}
+                        >
+                          {showMediaInput ? "✕ Close Attachment" : "📷 Attach Image / File"}
+                        </Button>
+                      </InlineStack>
                     </InlineStack>
 
                     {/* Media Attachment Input Drawer */}
@@ -921,6 +1062,47 @@ export default function LiveInboxPage() {
           </Layout.Section>
         </Layout>
       </BlockStack>
+
+      {/* Direct Template Send Modal in Chat */}
+      <Modal
+        open={isTemplateModalOpen}
+        onClose={() => setIsTemplateModalOpen(false)}
+        title={`📋 Send WhatsApp Template to +${activeConversation?.customerPhone || ""}`}
+        primaryAction={{
+          content: "🚀 Send Template Message",
+          onAction: handleSendTemplateSubmit,
+          loading: isSubmitting,
+        }}
+        secondaryActions={[
+          {
+            content: "Cancel",
+            onAction: () => setIsTemplateModalOpen(false),
+          },
+        ]}
+      >
+        <Modal.Section>
+          <FormLayout>
+            <Text as="p" variant="bodySm">
+              Recipient: <b>{activeConversation?.customerName || "Customer"}</b> (+{activeConversation?.customerPhone})
+              {activeConversation?.lastOrderNumber && ` • Order: ${activeConversation.lastOrderNumber}`}
+            </Text>
+            <Select
+              label="Select Pre-Approved Template"
+              options={[
+                { label: "🧾 Order & Delivery Address Confirmation (3 Interactive Buttons)", value: "ORDER_CONFIRM_ADDRESS" },
+                { label: "📦 Standard Order Confirmation", value: "ORDER_CONFIRM" },
+                { label: "💳 Cash On Delivery (COD) Verification", value: "COD_CONFIRM" },
+                { label: "🚚 Shipping & Live Tracking Update", value: "ORDER_SHIPPED" },
+                { label: "📦 Order Delivered & Review Request", value: "ORDER_DELIVERED" },
+                { label: "✨ Inactive Customer Win-Back", value: "WIN_BACK" },
+              ]}
+              value={selectedTemplateEvent}
+              onChange={setSelectedTemplateEvent}
+              helpText="Template messages deliver worldwide 24/7 even if customer service window has expired."
+            />
+          </FormLayout>
+        </Modal.Section>
+      </Modal>
 
       {/* Start New Conversation Modal */}
       <Modal

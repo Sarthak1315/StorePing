@@ -162,6 +162,24 @@ export async function processPendingJobs(limit = 20) {
     const interpolatedHeader = interpolateVariables(template.headerText, payload.templateVariables);
     const interpolatedButtonUrl = interpolateVariables(template.buttonUrl, payload.templateVariables);
 
+    // Format buttons with order ID if applicable
+    const orderNumber = payload.templateVariables?.order_number || payload.templateVariables?.order_id || "";
+    const rawButtons = (template.buttons as any[]) || [];
+    const formattedButtons = rawButtons.map((b) => {
+      let btnId = b.id;
+      if (btnId === "confirm_order" && orderNumber) btnId = `confirm_order_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
+      if (btnId === "update_address" && orderNumber) btnId = `update_address_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
+      if (btnId === "support_query" && orderNumber) btnId = `support_query_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
+      if (btnId === "confirm_cod" && orderNumber) btnId = `confirm_cod_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
+      if (btnId === "cancel_cod" && orderNumber) btnId = `cancel_cod_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
+
+      return {
+        ...b,
+        id: btnId,
+        url: b.url ? interpolateVariables(b.url, payload.templateVariables) : undefined,
+      };
+    });
+
     // Send WhatsApp message
     const result = await sendWhatsAppMessage({
       merchantId: merchant.id,
@@ -176,6 +194,7 @@ export async function processPendingJobs(limit = 20) {
       buttonType: template.buttonType,
       buttonText: template.buttonText,
       buttonUrl: interpolatedButtonUrl,
+      buttons: formattedButtons.length > 0 ? formattedButtons : undefined,
     });
 
     if (result.success) {

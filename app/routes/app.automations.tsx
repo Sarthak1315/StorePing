@@ -207,14 +207,18 @@ export default function AutomationsPage() {
   // Helper to format event type names
   const formatEventName = (eventType: string) => {
     switch (eventType) {
+      case "ORDER_CONFIRM_ADDRESS":
+        return "🧾 Order & Address Confirmation (3-Button)";
+      case "ORDER_CONFIRM":
+        return "🧾 Order Placed Confirmation";
+      case "COD_CONFIRM":
+        return "💳 COD Order Verification";
       case "CART_RECOVERY_1":
         return "🛒 Cart Recovery (Step 1)";
       case "CART_RECOVERY_2":
         return "🛒 Cart Recovery (Step 2 - 10% Discount)";
       case "CART_RECOVERY_3":
         return "🛒 Cart Recovery (Step 3 - Final Urgency)";
-      case "ORDER_CONFIRM":
-        return "🧾 Order Confirmation";
       case "ORDER_SHIPPED":
         return "🚚 Shipping & Tracking Alert";
       case "ORDER_DELIVERED":
@@ -225,6 +229,8 @@ export default function AutomationsPage() {
         return "✨ Customer Win-Back";
       case "SUPPORT_AUTO_REPLY":
         return "🤖 Support Auto-Reply";
+      case "ADDRESS_UPDATE_PROMPT":
+        return "✏️ Address Update Prompt";
       default:
         return eventType || "WhatsApp Dispatch";
     }

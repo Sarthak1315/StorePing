@@ -181,7 +181,31 @@ export async function syncTemplateToMeta(merchantId: string, template: {
     });
   }
 
-  if (template.buttonType === "CTA_URL" && template.buttonText && template.buttonUrl) {
+  const templateButtons = (template as any).buttons || [];
+  if (templateButtons && Array.isArray(templateButtons) && templateButtons.length > 0) {
+    const metaButtons: any[] = [];
+    templateButtons.slice(0, 3).forEach((b: any) => {
+      if (b.type === "CTA_URL" || b.url) {
+        metaButtons.push({
+          type: "URL",
+          text: (b.text || b.title || "View").slice(0, 25),
+          url: b.url && b.url.includes("http") ? b.url : `https://${merchant.shop}`,
+        });
+      } else {
+        metaButtons.push({
+          type: "QUICK_REPLY",
+          text: (b.text || b.title || "Reply").slice(0, 25),
+        });
+      }
+    });
+
+    if (metaButtons.length > 0) {
+      components.push({
+        type: "BUTTONS",
+        buttons: metaButtons,
+      });
+    }
+  } else if (template.buttonType === "CTA_URL" && template.buttonText && template.buttonUrl) {
     components.push({
       type: "BUTTONS",
       buttons: [
@@ -189,6 +213,16 @@ export async function syncTemplateToMeta(merchantId: string, template: {
           type: "URL",
           text: template.buttonText.slice(0, 25),
           url: template.buttonUrl.includes("http") ? template.buttonUrl : `https://${merchant.shop}`,
+        },
+      ],
+    });
+  } else if (template.buttonType === "QUICK_REPLY" && template.buttonText) {
+    components.push({
+      type: "BUTTONS",
+      buttons: [
+        {
+          type: "QUICK_REPLY",
+          text: template.buttonText.slice(0, 25),
         },
       ],
     });
@@ -238,6 +272,7 @@ export interface SendWhatsAppMessageOptions {
   buttonType?: string | null;
   buttonText?: string | null;
   buttonUrl?: string | null;
+  buttons?: Array<{ id: string; text?: string; title?: string; type?: string; url?: string }>;
   senderRole?: "BOT" | "MERCHANT";
   isInsideCSW?: boolean;
 }
@@ -265,6 +300,7 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     buttonType,
     buttonText,
     buttonUrl,
+    buttons = [],
     senderRole = "BOT",
   } = options;
 
@@ -373,6 +409,73 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
         name: templateName,
         language: { code: templateLanguage },
         ...(components.length > 0 ? { components } : {}),
+      },
+    };
+  } else if ((buttons && Array.isArray(buttons) && buttons.length > 0) || buttonType === "MULTI_BUTTON") {
+    const rawButtons = buttons || [];
+    const replyButtons: any[] = [];
+
+    rawButtons.slice(0, 3).forEach((b, idx) => {
+      const btnTitle = (b.text || b.title || `Option ${idx + 1}`).trim().slice(0, 20);
+      const btnId = (b.id || `btn_${idx + 1}`).trim().slice(0, 256);
+      replyButtons.push({
+        type: "reply",
+        reply: {
+          id: btnId,
+          title: btnTitle,
+        },
+      });
+    });
+
+    if (replyButtons.length > 0) {
+      payload = {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: recipientPhone,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          ...(headerType === "TEXT" && headerText ? { header: { type: "text", text: headerText } } : {}),
+          ...(headerType === "IMAGE" && headerMediaUrl ? { header: { type: "image", image: { link: headerMediaUrl } } } : {}),
+          body: { text: bodyText || "Please choose an option below:" },
+          ...(footerText ? { footer: { text: footerText } } : {}),
+          action: {
+            buttons: replyButtons,
+          },
+        },
+      };
+    } else {
+      payload = {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: recipientPhone,
+        type: "text",
+        text: { preview_url: true, body: bodyText || "Hello from StorePing!" },
+      };
+    }
+  } else if (buttonType === "QUICK_REPLY" && buttonText) {
+    payload = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: recipientPhone,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        ...(headerType === "TEXT" && headerText ? { header: { type: "text", text: headerText } } : {}),
+        ...(headerType === "IMAGE" && headerMediaUrl ? { header: { type: "image", image: { link: headerMediaUrl } } } : {}),
+        body: { text: bodyText || "Store notification" },
+        ...(footerText ? { footer: { text: footerText } } : {}),
+        action: {
+          buttons: [
+            {
+              type: "reply",
+              reply: {
+                id: "btn_quick_reply",
+                title: buttonText.slice(0, 20),
+              },
+            },
+          ],
+        },
       },
     };
   } else if (buttonType === "CTA_URL" && buttonUrl && buttonText) {

@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import db from "../db.server";
 import { logInfo, logWarn } from "../utils/logger.server";
+import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 
 /**
  * Meta Webhook Verification Handshake (GET).
@@ -24,7 +25,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 /**
  * Meta WhatsApp Webhook Ingestion (POST).
- * Handles message status receipts (delivered, read, failed) and incoming customer replies (2-way support conversations).
+ * Handles message status receipts (delivered, read, failed), incoming customer replies,
+ * and interactive button replies (Order & Address Confirmation, Updates, Support).
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   try {
@@ -81,7 +83,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           }
         }
 
-        // 2. Incoming Messages from Customer (2-Way Conversations & Support Chat)
+        // 2. Incoming Messages from Customer (2-Way Conversations & Interactive Button Clicks)
         const messages = value.messages || [];
         const contacts = value.contacts || [];
 
@@ -91,12 +93,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           const metaMessageId = msg.id;
           const fromPhone = rawFromPhone.replace(/[^0-9]/g, "");
 
-          const msgType = (msg.type || "text").toUpperCase(); // IMAGE, VIDEO, DOCUMENT, AUDIO, TEXT
+          const msgType = (msg.type || "text").toUpperCase(); // IMAGE, VIDEO, DOCUMENT, AUDIO, TEXT, INTERACTIVE, BUTTON
           
           let mediaId: string | null = null;
           let mimeType: string | null = null;
           let caption: string | null = null;
           let messageText: string = "";
+          let buttonReplyId: string = "";
 
           if (msg.type === "image") {
             mediaId = msg.image?.id || null;
@@ -117,13 +120,136 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             mediaId = msg.audio?.id || msg.voice?.id || null;
             mimeType = msg.audio?.mime_type || "audio/ogg";
             messageText = "🎵 Voice Note";
+          } else if (msg.type === "interactive" && msg.interactive?.type === "button_reply") {
+            buttonReplyId = msg.interactive.button_reply.id || "";
+            messageText = msg.interactive.button_reply.title || "Button Clicked";
+          } else if (msg.type === "button") {
+            buttonReplyId = msg.button?.payload || "";
+            messageText = msg.button?.text || "Button Clicked";
           } else {
-            messageText = msg.text?.body || msg.interactive?.button_reply?.title || msg.button?.text || "Message";
+            messageText = msg.text?.body || "Message";
           }
 
           if (merchant) {
             // Calculate 24-hour Customer Service Window (CSW)
             const cswExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+            // Check if this is an interactive button click or text reply relating to an order confirmation
+            let relatedOrderNumber: string | null = null;
+
+            // Extract order number from button reply ID if pattern is confirm_order_1002 or update_address_1002
+            if (buttonReplyId.startsWith("confirm_order_") || buttonReplyId.startsWith("confirm_cod_")) {
+              const rawNum = buttonReplyId.replace("confirm_order_", "").replace("confirm_cod_", "");
+              relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
+            } else if (buttonReplyId.startsWith("update_address_")) {
+              const rawNum = buttonReplyId.replace("update_address_", "");
+              relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
+            }
+
+            // Find matching OrderConfirmation record
+            let matchingOrder = relatedOrderNumber
+              ? await db.orderConfirmation.findFirst({
+                  where: { merchantId: merchant.id, orderNumber: relatedOrderNumber },
+                })
+              : await db.orderConfirmation.findFirst({
+                  where: { merchantId: merchant.id, customerPhone: fromPhone },
+                  orderBy: { createdAt: "desc" },
+                });
+
+            if (matchingOrder) {
+              relatedOrderNumber = matchingOrder.orderNumber;
+            }
+
+            // Handle Specific Action Buttons:
+            const isConfirmAction =
+              buttonReplyId.includes("confirm_order") ||
+              buttonReplyId.includes("confirm_cod") ||
+              messageText.toLowerCase().includes("confirm address") ||
+              messageText.toLowerCase().includes("confirm order");
+
+            const isUpdateAddressAction =
+              buttonReplyId.includes("update_address") ||
+              messageText.toLowerCase().includes("update address") ||
+              messageText.toLowerCase().includes("change address");
+
+            const isSupportAction =
+              buttonReplyId.includes("support_query") ||
+              buttonReplyId.includes("ask_query") ||
+              messageText.toLowerCase().includes("ask query") ||
+              messageText.toLowerCase().includes("need help");
+
+            if (isConfirmAction && matchingOrder) {
+              // 1. Mark Order as Confirmed
+              await db.orderConfirmation.update({
+                where: { id: matchingOrder.id },
+                data: {
+                  status: "CONFIRMED",
+                  confirmedAt: new Date(),
+                },
+              });
+
+              // Send Automated WhatsApp Confirmation Back to Customer
+              const confirmReplyText = `🎉 *Order & Address Verified!*\n\nThank you ${profileName || matchingOrder.customerName || "there"}! Your order *${matchingOrder.orderNumber}* and delivery address have been verified.\n\nOur fulfillment team is now packing your items for dispatch. We will share your live tracking link as soon as your parcel is on its way! 🚚✨`;
+
+              await sendWhatsAppMessage({
+                merchantId: merchant.id,
+                recipientPhone: fromPhone,
+                customerName: profileName || matchingOrder.customerName || "Customer",
+                eventType: "ORDER_CONFIRM_REPLY",
+                bodyText: confirmReplyText,
+                senderRole: "BOT",
+              });
+            } else if (isUpdateAddressAction && matchingOrder) {
+              // 2. Mark Order as Update Requested
+              await db.orderConfirmation.update({
+                where: { id: matchingOrder.id },
+                data: {
+                  status: "UPDATE_REQUESTED",
+                },
+              });
+
+              // Send Automated WhatsApp Prompt for New Address
+              const promptReplyText = `✏️ *Address Update Request Received for ${matchingOrder.orderNumber}*\n\nPlease reply directly to this chat with your updated complete address and contact phone number. 📍\n\nOur support team will verify and update your delivery details in the system before shipping your order! 📦`;
+
+              await sendWhatsAppMessage({
+                merchantId: merchant.id,
+                recipientPhone: fromPhone,
+                customerName: profileName || matchingOrder.customerName || "Customer",
+                eventType: "ADDRESS_UPDATE_PROMPT",
+                bodyText: promptReplyText,
+                senderRole: "BOT",
+              });
+            } else if (isSupportAction) {
+              const supportReplyText = `💬 *Store Support Team*\n\nHello ${profileName || "there"}! We're here to help you with any questions regarding your order ${relatedOrderNumber || ""}.\n\nPlease tell us how we can assist you and an agent will reply shortly! 😊`;
+
+              await sendWhatsAppMessage({
+                merchantId: merchant.id,
+                recipientPhone: fromPhone,
+                customerName: profileName || "Customer",
+                eventType: "SUPPORT_REPLY",
+                bodyText: supportReplyText,
+                senderRole: "BOT",
+              });
+            } else if (matchingOrder && matchingOrder.status === "UPDATE_REQUESTED" && msgType === "TEXT") {
+              // If customer previously requested update and is now sending their new address text, save notes!
+              await db.orderConfirmation.update({
+                where: { id: matchingOrder.id },
+                data: {
+                  customerNotes: messageText,
+                },
+              });
+
+              // Auto-acknowledge receipt
+              const ackText = `✅ *Thank you!*\nWe have received your updated details: \n_"${messageText}"_\n\nOur team has updated this on Order *${matchingOrder.orderNumber}*.`;
+              await sendWhatsAppMessage({
+                merchantId: merchant.id,
+                recipientPhone: fromPhone,
+                customerName: profileName || matchingOrder.customerName || "Customer",
+                eventType: "ADDRESS_SAVED_ACK",
+                bodyText: ackText,
+                senderRole: "BOT",
+              });
+            }
 
             // Upsert Conversation
             const conversation = await db.conversation.upsert({
@@ -136,7 +262,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               create: {
                 merchantId: merchant.id,
                 customerPhone: fromPhone,
-                customerName: profileName || null,
+                customerName: profileName || matchingOrder?.customerName || null,
+                lastOrderNumber: relatedOrderNumber || null,
+                lastOrderId: matchingOrder?.orderId || null,
                 lastMessageText: messageText,
                 lastMessageAt: new Date(),
                 unreadCount: 1,
@@ -144,7 +272,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 cswExpiresAt,
               },
               update: {
-                customerName: profileName || undefined,
+                customerName: profileName || matchingOrder?.customerName || undefined,
+                lastOrderNumber: relatedOrderNumber || undefined,
+                lastOrderId: matchingOrder?.orderId || undefined,
                 lastMessageText: messageText,
                 lastMessageAt: new Date(),
                 unreadCount: { increment: 1 },
@@ -158,7 +288,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               data: {
                 conversationId: conversation.id,
                 sender: "CUSTOMER",
-                messageType: msgType,
+                messageType: msgType === "INTERACTIVE" || msgType === "BUTTON" ? "INTERACTIVE" : msgType,
                 bodyText: messageText,
                 mediaId,
                 mediaUrl: mediaId ? `/api/meta/media?mediaId=${mediaId}` : null,
@@ -190,3 +320,4 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response("EVENT_RECEIVED", { status: 200 });
   }
 };
+

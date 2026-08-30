@@ -28,13 +28,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const merchant = await db.merchant.findUnique({
+  let merchant = await db.merchant.findUnique({
     where: { shop },
     include: { templates: true },
   });
 
   if (!merchant) {
-    throw new Response("Merchant not found", { status: 404 });
+    merchant = await db.merchant.create({
+      data: { shop, name: shop.replace(".myshopify.com", "") },
+      include: { templates: true },
+    });
   }
 
   await seedDefaultTemplates(merchant.id);
@@ -76,16 +79,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       customer_name: "Rahul Sharma",
       order_id: "1024",
       order_name: "#1024",
+      order_number: "1024",
       total_price: "₹2,499.00",
+      total_amount: "2,499.00",
+      currency: "INR",
+      shipping_address: "Flat 402, Royal Residency, MG Road, Mumbai, Maharashtra 400001",
+      customer_phone: testPhone,
+      cart_items: "Silk Embroidered Sherwani (x1), Royal Dupatta (x1)",
+      items: "Silk Embroidered Sherwani (x1), Royal Dupatta (x1)",
+      store_name: merchant.name || shop.replace(".myshopify.com", ""),
+      carrier: "BlueDart Express",
       tracking_number: "IN9823471029",
-      tracking_url: "https://track.shiprocket.in/1024",
-      checkout_url: `https://${shop}/checkouts/c/sample-cart`,
+      tracking_url: `https://${shop}/account/orders`,
+      checkout_url: `https://${shop}/checkouts/sample-cart`,
       discount_code: "SAVE10",
     };
 
     const interpolatedBody = interpolateVariables(bodyText, sampleVariables);
     const interpolatedHeader = interpolateVariables(headerText, sampleVariables);
     const interpolatedBtnUrl = interpolateVariables(buttonUrl, sampleVariables);
+
+    // Default 3 buttons if multi-button
+    const sampleButtons =
+      buttonType === "MULTI_BUTTON"
+        ? [
+            { id: "confirm_order_1024", text: "✅ Confirm Address", type: "QUICK_REPLY" },
+            { id: "update_address_1024", text: "✏️ Update Address / Mobile", type: "QUICK_REPLY" },
+            { id: "support_query_1024", text: "💬 Ask Query", type: "QUICK_REPLY" },
+          ]
+        : undefined;
 
     try {
       const sendResult = await sendWhatsAppMessage({
@@ -97,10 +119,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         headerType: headerType !== "NONE" ? headerType : null,
         headerText: headerType === "TEXT" ? interpolatedHeader : null,
         headerMediaUrl: headerType === "IMAGE" ? headerMediaUrl : null,
-        footerText: footerText || null,
+        footerText: footerText || `${merchant.name || shop} • 1-Click Verification`,
         buttonType: buttonType !== "NONE" ? buttonType : null,
         buttonText: buttonText || null,
         buttonUrl: interpolatedBtnUrl || null,
+        buttons: sampleButtons,
       });
 
       if (!sendResult.success) {
@@ -137,6 +160,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // 2. Handle Save & Meta Sync
   const syncToMeta = formData.get("syncToMeta") === "true";
 
+  // Build buttons json
+  let buttonsJson: any[] = [];
+  if (buttonType === "MULTI_BUTTON") {
+    buttonsJson = [
+      { id: "confirm_order", text: "✅ Confirm Address", type: "QUICK_REPLY" },
+      { id: "update_address", text: "✏️ Update Address / Mobile", type: "QUICK_REPLY" },
+      { id: "support_query", text: "💬 Ask Query", type: "QUICK_REPLY" },
+    ];
+  } else if (buttonType === "CTA_URL") {
+    buttonsJson = [{ id: "cta_btn", text: buttonText, type: "CTA_URL", url: buttonUrl }];
+  } else if (buttonType === "QUICK_REPLY") {
+    buttonsJson = [{ id: "quick_btn", text: buttonText, type: "QUICK_REPLY" }];
+  }
+
   const updated = await db.template.update({
     where: { id: templateId },
     data: {
@@ -148,6 +185,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       buttonType,
       buttonText,
       buttonUrl,
+      buttons: buttonsJson as any,
     },
   });
 
@@ -158,7 +196,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       metaSyncResult = await syncTemplateToMeta(merchant.id, {
         name: `storeping_${updated.eventType.toLowerCase()}`,
-        category: updated.eventType.includes("CART") ? "MARKETING" : "UTILITY",
+        category: updated.eventType.includes("CART") || updated.eventType.includes("WIN_BACK") ? "MARKETING" : "UTILITY",
         bodyText,
         headerType,
         headerText,
@@ -189,7 +227,7 @@ export default function TemplatesAndSimulatorPage() {
   const fetcher = useFetcher<typeof action>();
   const actionData = fetcher.data as any;
 
-  const [selectedEvent, setSelectedEvent] = useState<string>(templates[0]?.eventType || "CART_RECOVERY_1");
+  const [selectedEvent, setSelectedEvent] = useState<string>(templates[0]?.eventType || "ORDER_CONFIRM_ADDRESS");
 
   const currentTemplate = templates.find((t) => t.eventType === selectedEvent) || templates[0];
 
@@ -198,7 +236,7 @@ export default function TemplatesAndSimulatorPage() {
   const [headerMediaUrl, setHeaderMediaUrl] = useState<string>(currentTemplate?.headerMediaUrl || "");
   const [bodyText, setBodyText] = useState<string>(currentTemplate?.bodyText || "");
   const [footerText, setFooterText] = useState<string>(currentTemplate?.footerText || "");
-  const [buttonType, setButtonType] = useState<string>(currentTemplate?.buttonType || "QUICK_REPLY");
+  const [buttonType, setButtonType] = useState<string>(currentTemplate?.buttonType || "MULTI_BUTTON");
   const [buttonText, setButtonText] = useState<string>(currentTemplate?.buttonText || "");
   const [buttonUrl, setButtonUrl] = useState<string>(currentTemplate?.buttonUrl || "");
   const [testPhoneNumber, setTestPhoneNumber] = useState<string>("+91 9374626600");
@@ -213,7 +251,7 @@ export default function TemplatesAndSimulatorPage() {
       setHeaderMediaUrl(tpl.headerMediaUrl || "");
       setBodyText(tpl.bodyText || "");
       setFooterText(tpl.footerText || "");
-      setButtonType(tpl.buttonType || "QUICK_REPLY");
+      setButtonType(tpl.buttonType || "MULTI_BUTTON");
       setButtonText(tpl.buttonText || "");
       setButtonUrl(tpl.buttonUrl || "");
     }
@@ -264,10 +302,19 @@ export default function TemplatesAndSimulatorPage() {
     customer_name: "Rahul Sharma",
     order_id: "1024",
     order_name: "#1024",
+    order_number: "1024",
     total_price: "₹2,499.00",
+    total_amount: "2,499.00",
+    currency: "INR",
+    shipping_address: "Flat 402, Royal Residency, MG Road, Mumbai, Maharashtra 400001",
+    customer_phone: "919374626600",
+    cart_items: "Silk Embroidered Sherwani (x1), Royal Dupatta (x1)",
+    items: "Silk Embroidered Sherwani (x1), Royal Dupatta (x1)",
+    store_name: merchant.name || merchant.shop.replace(".myshopify.com", ""),
+    carrier: "BlueDart Express",
     tracking_number: "IN9823471029",
-    tracking_url: "https://track.shiprocket.in/1024",
-    checkout_url: `https://${merchant.shop}/checkouts/c/123`,
+    tracking_url: `https://${merchant.shop}/account/orders`,
+    checkout_url: `https://${merchant.shop}/checkouts/sample-cart`,
     discount_code: "SAVE10",
   };
 
@@ -276,29 +323,35 @@ export default function TemplatesAndSimulatorPage() {
 
   const availableVariables = [
     { label: "Customer Name", key: "customer_name" },
-    { label: "Order ID", key: "order_id" },
-    { label: "Order Name", key: "order_name" },
-    { label: "Total Price", key: "total_price" },
-    { label: "Tracking Number", key: "tracking_number" },
+    { label: "Order Number", key: "order_number" },
+    { label: "Total Amount", key: "total_amount" },
+    { label: "Currency", key: "currency" },
+    { label: "Shipping Address", key: "shipping_address" },
+    { label: "Customer Phone", key: "customer_phone" },
+    { label: "Order Items", key: "cart_items" },
+    { label: "Store Name", key: "store_name" },
     { label: "Tracking URL", key: "tracking_url" },
+    { label: "Courier Carrier", key: "carrier" },
     { label: "Checkout URL", key: "checkout_url" },
     { label: "Discount Code", key: "discount_code" },
   ];
 
   const templateOptions = [
-    { label: "🛒 Cart Recovery - Step 1 (1 Hour)", value: "CART_RECOVERY_1" },
-    { label: "🛒 Cart Recovery - Step 2 (24 Hours)", value: "CART_RECOVERY_2" },
-    { label: "🛒 Cart Recovery - Step 3 (48 Hours)", value: "CART_RECOVERY_3" },
-    { label: "📦 Order Confirmation", value: "ORDER_CONFIRMATION" },
-    { label: "🚚 Shipping & Tracking Update", value: "FULFILLMENT_UPDATE" },
-    { label: "❌ Order Cancellation", value: "ORDER_CANCELLED" },
-    { label: "💳 COD to Prepaid Conversion", value: "COD_TO_PREPAID" },
+    { label: "🧾 Order & Delivery Address Confirmation (3 Interactive Buttons)", value: "ORDER_CONFIRM_ADDRESS" },
+    { label: "📦 Standard Order Confirmation", value: "ORDER_CONFIRM" },
+    { label: "💳 Cash on Delivery (COD) Verification", value: "COD_CONFIRM" },
+    { label: "🚚 Shipping & Tracking Update", value: "ORDER_SHIPPED" },
+    { label: "📦 Order Delivered & Review Request", value: "ORDER_DELIVERED" },
+    { label: "🛒 Cart Recovery - Step 1 (30 min)", value: "CART_RECOVERY_1" },
+    { label: "🛒 Cart Recovery - Step 2 (6 hr 10% Off)", value: "CART_RECOVERY_2" },
+    { label: "✨ Inactive Customer Win-Back", value: "WIN_BACK" },
+    { label: "🤖 24/7 Support Auto-Reply", value: "SUPPORT_AUTO_REPLY" },
   ];
 
   return (
     <Page
       title="WhatsApp Message Templates & Live Simulator"
-      subtitle="Create, customize, and test WhatsApp message templates directly on your phone."
+      subtitle="Create, customize, and test WhatsApp message templates with interactive buttons directly on your phone."
     >
       <BlockStack gap="500">
         {actionData?.testSent && (
@@ -362,7 +415,7 @@ export default function TemplatesAndSimulatorPage() {
                     value={headerText}
                     onChange={setHeaderText}
                     autoComplete="off"
-                    helpText="Appears bold at the top of your message. Supports variables like {{customer_name}}."
+                    helpText="Appears bold at the top of your message. Supports variables like {{order_number}}."
                   />
                 )}
 
@@ -399,7 +452,7 @@ export default function TemplatesAndSimulatorPage() {
                   label="Message Body"
                   value={bodyText}
                   onChange={setBodyText}
-                  multiline={5}
+                  multiline={6}
                   autoComplete="off"
                   helpText="Use {{variable_name}} for dynamic store data."
                 />
@@ -415,17 +468,18 @@ export default function TemplatesAndSimulatorPage() {
 
                 {/* Button Action Configuration */}
                 <Select
-                  label="Interactive Button"
+                  label="Interactive Button Format"
                   options={[
                     { label: "None", value: "NONE" },
-                    { label: "Quick Reply Button (Opt-out / Support)", value: "QUICK_REPLY" },
+                    { label: "3 Interactive Quick-Reply Buttons (Address Confirm / Edit / Query)", value: "MULTI_BUTTON" },
+                    { label: "Single Quick-Reply Button", value: "QUICK_REPLY" },
                     { label: "Call to Action URL Button (Checkout / Tracking)", value: "CTA_URL" },
                   ]}
                   value={buttonType}
                   onChange={setButtonType}
                 />
 
-                {buttonType !== "NONE" && (
+                {buttonType === "QUICK_REPLY" && (
                   <TextField
                     label="Button Label"
                     value={buttonText}
@@ -435,13 +489,40 @@ export default function TemplatesAndSimulatorPage() {
                 )}
 
                 {buttonType === "CTA_URL" && (
-                  <TextField
-                    label="Button Destination URL"
-                    value={buttonUrl}
-                    onChange={setButtonUrl}
-                    autoComplete="off"
-                    helpText="Supports {{checkout_url}} or {{tracking_url}}."
-                  />
+                  <>
+                    <TextField
+                      label="Button Label"
+                      value={buttonText}
+                      onChange={setButtonText}
+                      autoComplete="off"
+                    />
+                    <TextField
+                      label="Button Destination URL"
+                      value={buttonUrl}
+                      onChange={setButtonUrl}
+                      autoComplete="off"
+                      helpText="Supports {{checkout_url}} or {{tracking_url}}."
+                    />
+                  </>
+                )}
+
+                {buttonType === "MULTI_BUTTON" && (
+                  <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+                    <BlockStack gap="100">
+                      <Text as="p" variant="bodySm" fontWeight="bold">
+                        Interactive Action Buttons (Dispatched directly via WhatsApp API):
+                      </Text>
+                      <Text as="p" variant="bodyXs" tone="subdued">
+                        1. <b>[✅ Confirm Address]</b> — Instant verification status updated in merchant orders table.
+                      </Text>
+                      <Text as="p" variant="bodyXs" tone="subdued">
+                        2. <b>[✏️ Update Address / Mobile]</b> — Auto-prompts customer for new delivery address and flags order.
+                      </Text>
+                      <Text as="p" variant="bodyXs" tone="subdued">
+                        3. <b>[💬 Ask Query]</b> — Opens live conversation in Live Inbox.
+                      </Text>
+                    </BlockStack>
+                  </Box>
                 )}
 
                 <InlineStack gap="300" align="end">
@@ -519,7 +600,7 @@ export default function TemplatesAndSimulatorPage() {
                       style={{
                         backgroundColor: "#efeae2",
                         padding: "16px 12px",
-                        minHeight: "300px",
+                        minHeight: "320px",
                         borderRadius: "0 0 8px 8px",
                         display: "flex",
                         flexDirection: "column",
@@ -531,7 +612,7 @@ export default function TemplatesAndSimulatorPage() {
                           backgroundColor: "#ffffff",
                           borderRadius: "8px",
                           padding: "10px 12px",
-                          maxWidth: "92%",
+                          maxWidth: "96%",
                           boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
                           alignSelf: "flex-start",
                         }}
@@ -543,7 +624,7 @@ export default function TemplatesAndSimulatorPage() {
                               fontWeight: "bold",
                               fontSize: "13px",
                               marginBottom: "6px",
-                              color: "#111827",
+                              color: "#075e54",
                             }}
                           >
                             {simulatedHeader}
@@ -616,28 +697,89 @@ export default function TemplatesAndSimulatorPage() {
                         </div>
                       </div>
 
-                      {/* Interactive Button */}
-                      {buttonType !== "NONE" && buttonText && (
+                      {/* Interactive Buttons Preview */}
+                      {buttonType === "MULTI_BUTTON" && (
+                        <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "4px", maxWidth: "96%" }}>
+                          <div
+                            style={{
+                              backgroundColor: "#ffffff",
+                              borderRadius: "6px",
+                              padding: "8px",
+                              textAlign: "center",
+                              color: "#00a884",
+                              fontWeight: 600,
+                              fontSize: "12px",
+                              boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                            }}
+                          >
+                            ✅ Confirm Address
+                          </div>
+                          <div
+                            style={{
+                              backgroundColor: "#ffffff",
+                              borderRadius: "6px",
+                              padding: "8px",
+                              textAlign: "center",
+                              color: "#00a884",
+                              fontWeight: 600,
+                              fontSize: "12px",
+                              boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                            }}
+                          >
+                            ✏️ Update Address / Mobile
+                          </div>
+                          <div
+                            style={{
+                              backgroundColor: "#ffffff",
+                              borderRadius: "6px",
+                              padding: "8px",
+                              textAlign: "center",
+                              color: "#00a884",
+                              fontWeight: 600,
+                              fontSize: "12px",
+                              boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                            }}
+                          >
+                            💬 Ask Query
+                          </div>
+                        </div>
+                      )}
+
+                      {buttonType === "QUICK_REPLY" && buttonText && (
                         <div
                           style={{
                             backgroundColor: "#ffffff",
-                            borderRadius: "8px",
-                            marginTop: "4px",
+                            borderRadius: "6px",
+                            marginTop: "6px",
                             padding: "8px",
                             textAlign: "center",
                             color: "#00a884",
                             fontWeight: 600,
-                            fontSize: "13px",
+                            fontSize: "12px",
                             boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
-                            maxWidth: "92%",
-                            cursor: "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            gap: "6px",
+                            maxWidth: "96%",
                           }}
                         >
-                          {buttonType === "CTA_URL" ? "🔗" : "💬"} {buttonText}
+                          💬 {buttonText}
+                        </div>
+                      )}
+
+                      {buttonType === "CTA_URL" && buttonText && (
+                        <div
+                          style={{
+                            backgroundColor: "#ffffff",
+                            borderRadius: "6px",
+                            marginTop: "6px",
+                            padding: "8px",
+                            textAlign: "center",
+                            color: "#00a884",
+                            fontWeight: 600,
+                            fontSize: "12px",
+                            boxShadow: "0 1px 1px rgba(0,0,0,0.13)",
+                            maxWidth: "96%",
+                          }}
+                        >
+                          🔗 {buttonText}
                         </div>
                       )}
                     </div>
@@ -652,7 +794,7 @@ export default function TemplatesAndSimulatorPage() {
                     📱 Test This Template on Your Phone
                   </Text>
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Dispatches this live template configuration directly to your WhatsApp.
+                    Dispatches this live template configuration directly to your WhatsApp with interactive buttons.
                   </Text>
                   <TextField
                     label="Recipient WhatsApp Number"

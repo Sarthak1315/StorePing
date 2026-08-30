@@ -152,7 +152,7 @@ export default function AnalyticsPage() {
                           : c.status === "SENT"
                           ? "info"
                           : c.status === "CANCELLED"
-                          ? "subdued"
+                          ? undefined
                           : "attention"
                       }
                     >
