@@ -781,7 +781,7 @@ export default function OrdersManualPage() {
       title="Orders"
       subtitle="Send WhatsApp confirmations, address verifications, and recovery alerts."
       primaryAction={{
-        content: "🔄 1-Click Sync All to Shopify",
+        content: "Sync to Shopify",
         onAction: handleSyncAllOrders,
         loading: isSubmitting && fetcher.formData?.get("intent") === "syncAllOrders",
       }}
@@ -801,9 +801,9 @@ export default function OrdersManualPage() {
         )}
 
         <Card padding="0">
-          {/* Instant Client-Side Search Bar & 1-Click Sync Header */}
-          <div style={{ padding: "12px 16px", borderBottom: "1px solid #e1e3e5", display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 300px" }}>
+          {/* Instant Client-Side Search Bar */}
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid #e1e3e5", display: "flex", gap: "12px", alignItems: "center" }}>
+            <div style={{ flex: 1 }}>
               <TextField
                 label="Search orders"
                 labelHidden
@@ -816,25 +816,16 @@ export default function OrdersManualPage() {
                 onClearButtonClick={() => setSearchQuery("")}
               />
             </div>
-            <InlineStack gap="200" blockAlign="center">
-              {searchQuery && (
-                <>
-                  <Badge tone="info">
-                    {selectedTab <= 2 ? `${filteredOrders.length} found` : `${filteredCarts.length} found`}
-                  </Badge>
-                  <Button size="slim" onClick={() => setSearchQuery("")}>
-                    Clear
-                  </Button>
-                </>
-              )}
-              <Button
-                variant="primary"
-                loading={isSubmitting && fetcher.formData?.get("intent") === "syncAllOrders"}
-                onClick={handleSyncAllOrders}
-              >
-                🔄 1-Click Sync All Orders
-              </Button>
-            </InlineStack>
+            {searchQuery && (
+              <InlineStack gap="200" blockAlign="center">
+                <Badge tone="info">
+                  {selectedTab <= 2 ? `${filteredOrders.length} found` : `${filteredCarts.length} found`}
+                </Badge>
+                <Button size="slim" onClick={() => setSearchQuery("")}>
+                  Clear
+                </Button>
+              </InlineStack>
+            )}
           </div>
 
           <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
