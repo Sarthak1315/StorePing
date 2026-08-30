@@ -256,6 +256,7 @@ export default function ConnectWhatsAppPage() {
 
   return (
     <Page
+      fullWidth
       title="Connect WhatsApp Business"
       subtitle="Connect your Meta / Facebook Business Portfolio to enable automated WhatsApp customer alerts & live inbox."
     >

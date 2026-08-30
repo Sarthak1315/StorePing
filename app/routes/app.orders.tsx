@@ -694,8 +694,9 @@ export default function OrdersManualPage() {
 
   return (
     <Page
-      title="Orders & 1-Click WhatsApp Outreach"
-      subtitle="Send direct WhatsApp order confirmations, address verifications, and recovery messages anytime without 24h window restrictions."
+      fullWidth
+      title="Orders"
+      subtitle="Send WhatsApp confirmations, address verifications, and recovery alerts."
     >
       <BlockStack gap="400">
         {fetcher.data?.message && (
@@ -722,47 +723,43 @@ export default function OrdersManualPage() {
           </Banner>
         )}
 
-        <Layout>
-          <Layout.Section>
-            <Card padding="0">
-              <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
-                <Box padding="300">
-                  {selectedTab <= 2 ? (
-                    orderRows.length === 0 ? (
-                      <Box padding="600">
-                        <Text as="p" tone="subdued" alignment="center">
-                          {selectedTab === 1
-                            ? "No confirmed orders yet. Once customers tap 'Confirm Address' on WhatsApp, they will appear here!"
-                            : selectedTab === 2
-                            ? "No address update requests found."
-                            : "No orders found in Shopify yet."}
-                        </Text>
-                      </Box>
-                    ) : (
-                      <DataTable
-                        columnContentTypes={["text", "text", "text", "text", "text", "text", "text"]}
-                        headings={["Order / Draft", "Customer & Address", "Mobile Phone", "Total", "Payment", "Address Confirmation", "1-Click Actions"]}
-                        rows={orderRows}
-                      />
-                    )
-                  ) : cartRows.length === 0 ? (
-                    <Box padding="600">
-                      <Text as="p" tone="subdued" alignment="center">
-                        No abandoned checkouts recorded yet. When a customer leaves items in checkout, they will appear here!
-                      </Text>
-                    </Box>
-                  ) : (
-                    <DataTable
-                      columnContentTypes={["text", "text", "text", "text", "text", "text"]}
-                      headings={["Customer", "Mobile Phone", "Cart Value", "Status", "Date", "1-Click Recovery"]}
-                      rows={cartRows}
-                    />
-                  )}
+        <Card padding="0">
+          <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
+            <Box padding="300">
+              {selectedTab <= 2 ? (
+                orderRows.length === 0 ? (
+                  <Box padding="600">
+                    <Text as="p" tone="subdued" alignment="center">
+                      {selectedTab === 1
+                        ? "No confirmed orders yet. Once customers tap 'Confirm Address' on WhatsApp, they will appear here!"
+                        : selectedTab === 2
+                        ? "No address update requests found."
+                        : "No orders found in Shopify yet."}
+                    </Text>
+                  </Box>
+                ) : (
+                  <DataTable
+                    columnContentTypes={["text", "text", "text", "text", "text", "text", "text"]}
+                    headings={["Order", "Customer & Address", "Mobile Phone", "Total", "Payment", "Address Confirmation", "1-Click Actions"]}
+                    rows={orderRows}
+                  />
+                )
+              ) : cartRows.length === 0 ? (
+                <Box padding="600">
+                  <Text as="p" tone="subdued" alignment="center">
+                    No abandoned checkouts recorded yet. When a customer leaves items in checkout, they will appear here!
+                  </Text>
                 </Box>
-              </Tabs>
-            </Card>
-          </Layout.Section>
-        </Layout>
+              ) : (
+                <DataTable
+                  columnContentTypes={["text", "text", "text", "text", "text", "text"]}
+                  headings={["Customer", "Mobile Phone", "Cart Value", "Status", "Date", "1-Click Recovery"]}
+                  rows={cartRows}
+                />
+              )}
+            </Box>
+          </Tabs>
+        </Card>
       </BlockStack>
 
       {/* Rich Template Selection & Live Preview Modal */}

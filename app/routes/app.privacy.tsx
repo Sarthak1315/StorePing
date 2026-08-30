@@ -99,6 +99,7 @@ export default function PrivacyPage() {
 
   return (
     <Page
+      fullWidth
       title="Privacy & DPDP Compliance"
       subtitle="Digital Personal Data Protection (DPDP Act 2023) & GDPR Data Governance Center."
     >

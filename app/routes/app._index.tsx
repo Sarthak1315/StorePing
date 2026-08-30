@@ -100,6 +100,7 @@ export default function DashboardOverview() {
 
   return (
     <Page
+      fullWidth
       title="StorePing Dashboard"
       subtitle="Automated WhatsApp Marketing, Order Alerts & Abandoned Cart Recovery"
       primaryAction={{
@@ -108,7 +109,7 @@ export default function DashboardOverview() {
       }}
       secondaryActions={[
         {
-          content: "📦 Orders & 1-Click Send",
+          content: "📦 Orders",
           onAction: () => navigate("/app/orders"),
         },
         {

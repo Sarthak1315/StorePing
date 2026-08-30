@@ -12,6 +12,7 @@ import {
   BlockStack,
   Text,
   Button,
+  Spinner,
 } from "@shopify/polaris";
 import polarisTranslations from "@shopify/polaris/locales/en.json";
 import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
@@ -28,6 +29,19 @@ export default function App() {
   const { apiKey } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading" || navigation.state === "submitting";
+
+  // Remove the 0ms initial splash loader once React takes over
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      const splash = document.getElementById("initial-splash-loader");
+      if (splash) {
+        splash.style.opacity = "0";
+        setTimeout(() => {
+          splash.remove();
+        }, 260);
+      }
+    }
+  }, []);
 
   // Sync with Shopify App Bridge top-bar native loading indicator
   useEffect(() => {
@@ -49,9 +63,35 @@ export default function App() {
       {/* Top progress bar for route transitions */}
       {isLoading && <div id="loading-bar" />}
 
+      {/* Floating Transition Indicator */}
+      {isLoading && (
+        <div
+          style={{
+            position: "fixed",
+            top: "16px",
+            right: "24px",
+            zIndex: 99999,
+            backgroundColor: "rgba(32, 34, 35, 0.92)",
+            color: "#ffffff",
+            padding: "8px 16px",
+            borderRadius: "20px",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            fontSize: "13px",
+            fontWeight: 500,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <Spinner size="small" />
+          <span>Updating...</span>
+        </div>
+      )}
+
       <NavMenu>
         <Link to="/app" rel="home">Dashboard</Link>
-        <Link to="/app/orders">Orders & 1-Click Send</Link>
+        <Link to="/app/orders">Orders</Link>
         <Link to="/app/inbox">Live Inbox & Search</Link>
         <Link to="/app/automations">Automations (7 Flows)</Link>
         <Link to="/app/templates">Templates & Simulator</Link>
@@ -63,9 +103,10 @@ export default function App() {
 
       <div
         style={{
-          opacity: isLoading ? 0.75 : 1,
+          opacity: isLoading ? 0.7 : 1,
           transition: "opacity 0.15s ease-in-out",
           minHeight: "100vh",
+          width: "100%",
         }}
       >
         <Outlet />

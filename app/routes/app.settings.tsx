@@ -181,6 +181,7 @@ export default function SettingsPage() {
 
   return (
     <Page
+      fullWidth
       title="StorePing Settings & Testing"
       subtitle="Configure your store profile, custom notification testing, and WhatsApp registration."
     >

@@ -76,6 +76,7 @@ export default function AnalyticsPage() {
 
   return (
     <Page
+      fullWidth
       title="StorePing Analytics"
       subtitle="Comprehensive performance metrics for WhatsApp messaging and cart recovery revenue."
     >
