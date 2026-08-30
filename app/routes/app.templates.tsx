@@ -1,6 +1,6 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Page,
   Layout,
@@ -269,6 +269,42 @@ export default function TemplatesAndSimulatorPage() {
 
   const isSubmitting = fetcher.state !== "idle";
 
+  // Floating Toast Notification Handler (No top banners)
+  useEffect(() => {
+    if (actionData) {
+      if (actionData.testSent) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(`Live test dispatched to ${actionData.testPhone}! 🚀`, { duration: 4000 });
+          }
+        } catch {}
+      } else if (actionData.testError) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(actionData.testError, { isError: true, duration: 5000 });
+          }
+        } catch {}
+      } else if (actionData.success && !actionData.testSent) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(
+              actionData.metaSyncResult
+                ? "Template saved & synced to Meta WhatsApp Business! 🚀"
+                : "Template saved successfully!",
+              { duration: 4000 }
+            );
+          }
+        } catch {}
+      } else if (actionData.metaSyncError) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(`Meta Sync Notice: ${actionData.metaSyncError}`, { isError: true, duration: 5000 });
+          }
+        } catch {}
+      }
+    }
+  }, [actionData]);
+
   const handleSave = (syncToMeta: boolean = false) => {
     if (!currentTemplate) return;
     const form = new FormData();
@@ -361,32 +397,6 @@ export default function TemplatesAndSimulatorPage() {
       subtitle="Create, customize, and test WhatsApp message templates with interactive buttons."
     >
       <BlockStack gap="500">
-        {actionData?.testSent && (
-          <Banner title="Test Message Delivered! 🚀" tone="success" onDismiss={() => {}}>
-            Live test message was successfully dispatched via Meta Cloud API to <strong>{actionData.testPhone}</strong>. Check your WhatsApp!
-          </Banner>
-        )}
-
-        {actionData?.testError && (
-          <Banner title="Test Message Failed" tone="critical" onDismiss={() => {}}>
-            {actionData.testError}
-          </Banner>
-        )}
-
-        {actionData?.success && !actionData?.testSent && !actionData?.metaSyncError && (
-          <Banner title="Template Saved Successfully" tone="success" onDismiss={() => {}}>
-            {actionData?.metaSyncResult
-              ? "Template updated in StorePing and successfully synced to Meta WhatsApp Business Account."
-              : "Template updated in StorePing."}
-          </Banner>
-        )}
-
-        {actionData?.metaSyncError && (
-          <Banner title="Meta Sync Notice" tone="warning" onDismiss={() => {}}>
-            Template saved locally, but Meta sync returned: {actionData.metaSyncError}. (Make sure your WABA has template creation permissions).
-          </Banner>
-        )}
-
         <Layout>
           {/* Left Column: Template Editor */}
           <Layout.Section>

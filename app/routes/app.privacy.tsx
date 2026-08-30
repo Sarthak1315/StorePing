@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
@@ -97,6 +97,17 @@ export default function PrivacyPage() {
     downloadAnchor.remove();
   };
 
+  // Floating Toast Notification Handler (No top banners)
+  useEffect(() => {
+    if (fetcher.data && "message" in fetcher.data) {
+      try {
+        if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+          (window as any).shopify.toast.show((fetcher.data as any).message, { duration: 4000 });
+        }
+      } catch {}
+    }
+  }, [fetcher.data]);
+
   return (
     <Page
       fullWidth
@@ -104,13 +115,6 @@ export default function PrivacyPage() {
       subtitle="DPDP Act 2023 & GDPR data governance and compliance center."
     >
       <Layout>
-        {fetcher.data && "message" in fetcher.data && (
-          <Layout.Section>
-            <Banner title="Operation Completed" tone="success">
-              <Text as="p">{(fetcher.data as any).message}</Text>
-            </Banner>
-          </Layout.Section>
-        )}
 
         {/* Consent Status Card */}
         <Layout.Section>

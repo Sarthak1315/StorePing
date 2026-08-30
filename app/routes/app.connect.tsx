@@ -245,8 +245,36 @@ export default function ConnectWhatsAppPage() {
     if (actionData) {
       if (actionData.disconnected) {
         setIsConnected(false);
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show("WhatsApp disconnected successfully.");
+          }
+        } catch {}
       } else if (actionData.connected || actionData.success) {
         setIsConnected(true);
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show("WhatsApp connected successfully! 🚀");
+          }
+        } catch {}
+      } else if (actionData.webhookSubscribed) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show("Meta Webhook Subscribed Successfully! 🚀");
+          }
+        } catch {}
+      } else if (actionData.simulated) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show("Test customer message ingested into Inbox! 💬");
+          }
+        } catch {}
+      } else if (actionData.error) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(actionData.error, { isError: true, duration: 5000 });
+          }
+        } catch {}
       }
     }
   }, [actionData]);
@@ -259,27 +287,10 @@ export default function ConnectWhatsAppPage() {
   return (
     <Page
       fullWidth
-      title="Connect WhatsApp Business"
+      title="Connect WhatsApp"
       subtitle="Connect your Meta / Facebook Business Portfolio to enable automated WhatsApp customer alerts & live inbox."
     >
       <BlockStack gap="400">
-        {actionData?.error && (
-          <Banner title="Connection Error" tone="critical">
-            <p>{actionData.error}</p>
-          </Banner>
-        )}
-
-        {actionData?.webhookSubscribed && (
-          <Banner title="Meta Webhook Subscribed Successfully!" tone="success">
-            <p>Your WhatsApp Business Account (WABA) is successfully subscribed to the Meta App webhooks!</p>
-          </Banner>
-        )}
-
-        {actionData?.simulated && (
-          <Banner title="Test Customer Message Ingested!" tone="success">
-            <p>A test incoming message has been added. Check your <b>Live Inbox & Search</b> to see it live!</p>
-          </Banner>
-        )}
 
         {!isConnected && errorParam && (
           <Banner title="Connection Notice" tone="warning">

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import {
@@ -547,6 +547,25 @@ export default function OrdersManualPage() {
     return { body, header, buttons };
   }, [selectedOrder, activeModalTemplate, customPhone, shop, merchant]);
 
+  // Floating Toast Notification Handler (No top banners)
+  useEffect(() => {
+    if (fetcher.data) {
+      if ((fetcher.data as any).message) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show((fetcher.data as any).message, { duration: 4000 });
+          }
+        } catch {}
+      } else if ((fetcher.data as any).error) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show((fetcher.data as any).error, { isError: true, duration: 5000 });
+          }
+        } catch {}
+      }
+    }
+  }, [fetcher.data]);
+
   // Instant Client-Side Filter: Tabs + Search Query (Order #, Name, Mobile, Address, Notes)
   const filteredOrders = useMemo(() => {
     let list = orders;
@@ -749,17 +768,6 @@ export default function OrdersManualPage() {
       subtitle="Send WhatsApp confirmations, address verifications, and recovery alerts."
     >
       <BlockStack gap="400">
-        {fetcher.data?.message && (
-          <Banner title="Action Successful" tone="success">
-            <p>{fetcher.data.message}</p>
-          </Banner>
-        )}
-
-        {fetcher.data?.error && (
-          <Banner title="Delivery Notice" tone="critical">
-            <p>{fetcher.data.error}</p>
-          </Banner>
-        )}
 
         {debugErrors && debugErrors.length > 0 && (
           <Banner title="Shopify API Scope Notice" tone="info">

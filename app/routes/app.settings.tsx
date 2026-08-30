@@ -1,19 +1,20 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Page,
   Layout,
   Card,
   Text,
   Button,
-  Banner,
   BlockStack,
   InlineStack,
   TextField,
   Select,
   Divider,
   Badge,
+  Checkbox,
+  Box,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -30,11 +31,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { shop },
   });
 
-  if (!merchant) {
-    throw new Response("Merchant not found", { status: 404 });
-  }
-
-  return json({ merchant });
+  return json({
+    shop,
+    merchant,
+  });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -43,82 +43,91 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
-  const merchant = await db.merchant.findUnique({
-    where: { shop },
-  });
+  const merchant = await db.merchant.findUnique({ where: { shop } });
+  if (!merchant) throw new Response("Merchant not found", { status: 404 });
 
-  if (!merchant) {
-    throw new Response("Merchant not found", { status: 404 });
-  }
-
-  // 1. Register Phone Number PIN with Meta
+  // 1. WhatsApp Phone Number Activation / 6-Digit PIN Registration
   if (intent === "registerPhone") {
-    const pin = (formData.get("pin") as string) || "123456";
+    const pin = (formData.get("pin") as string || "123456").trim();
 
     if (!merchant.phoneNumberId || !merchant.waAccessToken) {
-      return json({ error: "Missing Phone ID or Access Token. Connect WhatsApp first." }, { status: 400 });
+      return json({ error: "Please connect your WhatsApp Cloud API credentials in 'Connect WhatsApp' first." }, { status: 400 });
     }
 
     try {
-      const plainToken = decryptToken(merchant.waAccessToken);
-      await registerPhoneNumber(merchant.phoneNumberId, plainToken, pin);
+      const decryptedToken = decryptToken(merchant.waAccessToken);
+      const regResult = await registerPhoneNumber(merchant.phoneNumberId, decryptedToken, pin);
 
-      await logInfo("WhatsApp phone number registered successfully via Settings", {
-        shop,
-        source: "settings",
-        details: { phoneNumberId: merchant.phoneNumberId },
-      });
+      if (!regResult.success) {
+        throw new Error(regResult.error || "Meta registration failed.");
+      }
 
-      return json({ success: true, message: "WhatsApp Phone Number successfully registered with Meta Cloud API! ✓" });
+      await logInfo(`WhatsApp Phone ID ${merchant.phoneNumberId} registered with PIN successfully`, { shop, source: "settings" });
+
+      return json({ success: true, message: "WhatsApp Phone Number successfully registered with Meta Cloud API! 🚀" });
     } catch (err: any) {
-      await logError(`Phone registration failed: ${err.message}`, { shop, source: "settings" });
-      return json({ error: `Registration error: ${err.message}` }, { status: 400 });
+      await logError(`PIN registration failed: ${err.message}`, { shop, source: "settings" });
+      return json({ error: `Meta Phone Registration Error: ${err.message}` }, { status: 500 });
     }
   }
 
-  // 2. Test WhatsApp Dispatch
+  // 2. Send Live Test WhatsApp Message
   if (intent === "sendTestMessage") {
-    const rawPhone = formData.get("testPhone") as string;
-    const testPhone = normalizePhoneNumber(rawPhone);
-    const testMode = (formData.get("testMode") as string) || "custom";
-    const customMessageText = (formData.get("customMessageText") as string) || "";
-
-    if (!testPhone) {
-      return json({ error: "Please enter a valid 10-digit mobile number with country code." }, { status: 400 });
-    }
+    const testPhone = (formData.get("testPhone") as string || merchant.phone || "").trim();
+    const testMode = formData.get("testMode") as string;
+    const customMessageText = (formData.get("customMessageText") as string || "").trim();
 
     if (!merchant.isWhatsAppConnected) {
-      return json({ error: "WhatsApp Business Account is not connected yet. Please connect on the Connect page first." }, { status: 400 });
+      return json({ error: "WhatsApp is not connected. Please connect your credentials first." }, { status: 400 });
     }
 
-    const testBody =
-      customMessageText.trim() ||
-      `👋 *Hello from ${merchant.name || "Everon Lab Store"}!*\n\nThis is your custom WhatsApp notification from StorePing.\n\nYour automated customer messaging engine is 100% active and live! 🚀`;
+    if (!testPhone) {
+      return json({ error: "Please enter a recipient test mobile phone number." }, { status: 400 });
+    }
+
+    let cleanPhone = normalizePhoneNumber(testPhone);
+    if (!cleanPhone) {
+      return json({ error: "Invalid mobile number format. Please include country code (e.g. +91 9876543210)." }, { status: 400 });
+    }
+
+    if (testMode === "template") {
+      const result = await sendWhatsAppMessage({
+        merchantId: merchant.id,
+        recipientPhone: cleanPhone,
+        customerName: "StorePing Test Merchant",
+        eventType: "MANUAL_OUTREACH",
+        templateName: "hello_world",
+        templateLanguage: "en_US",
+      });
+
+      if (result.success) {
+        return json({ success: true, message: `Live test template 'hello_world' sent successfully to +${cleanPhone}!` });
+      } else {
+        return json({ error: result.error || "Failed to dispatch template message" }, { status: 500 });
+      }
+    }
+
+    // Default: Custom Interactive Session Message
+    const defaultText = `👋 *Hello from ${merchant.name || shop}!*\n\nThis is your test WhatsApp notification from StorePing.\n\nYour cart recovery and order alerts are 100% active! 🚀`;
 
     const result = await sendWhatsAppMessage({
       merchantId: merchant.id,
-      recipientPhone: testPhone,
-      customerName: "Store Owner",
-      eventType: "TEST_DISPATCH",
-      templateName: testMode === "template" ? "hello_world" : undefined,
-      templateLanguage: "en_US",
-      bodyText: testBody,
-      headerType: "TEXT",
-      headerText: `🛍️ ${merchant.name || "Everon Lab"}`,
-      footerText: "Reply STOP to unsubscribe",
-      buttonType: "CTA_URL",
+      recipientPhone: cleanPhone,
+      customerName: "StorePing Test Merchant",
+      eventType: "MANUAL_OUTREACH",
+      bodyText: customMessageText || defaultText,
       buttonText: "🛍️ View Store",
       buttonUrl: `https://${shop}`,
     });
 
     if (result.success) {
-      return json({ success: true, message: `Live custom WhatsApp message sent successfully to +${testPhone}!` });
+      return json({ success: true, message: `Live WhatsApp message sent successfully to +${cleanPhone}!` });
     } else {
       return json({ error: result.error || "Failed to dispatch test message" }, { status: 500 });
     }
   }
 
-  // 3. Save General Settings
+  // 3. Save General Settings & Notification Preferences
   const storeName = formData.get("storeName") as string;
   const currency = formData.get("currency") as string;
   const timezone = formData.get("timezone") as string;
@@ -136,7 +145,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   await logInfo("Merchant settings updated", { shop, source: "settings" });
 
-  return json({ success: true, message: "Settings and default test phone saved successfully." });
+  return json({ success: true, message: "Settings and notification preferences saved successfully!" });
 };
 
 export default function SettingsPage() {
@@ -154,8 +163,37 @@ export default function SettingsPage() {
   const [currency, setCurrency] = useState(merchant?.currency || "INR");
   const [timezone, setTimezone] = useState(merchant?.timezone || "Asia/Kolkata");
 
+  // Notification toggles
+  const [notifyConfirm, setNotifyConfirm] = useState(true);
+  const [notifyAddressUpdate, setNotifyAddressUpdate] = useState(true);
+  const [notifyInboundChat, setNotifyInboundChat] = useState(true);
+  const [notifyRecovery, setNotifyRecovery] = useState(true);
+
   const isLoading = fetcher.state !== "idle";
   const actionData = fetcher.data as any;
+
+  // Floating Toast Notification Trigger (No top banner)
+  useEffect(() => {
+    if (actionData) {
+      if (actionData.message) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(actionData.message, { duration: 4000 });
+          }
+        } catch {
+          // fallback
+        }
+      } else if (actionData.error) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(actionData.error, { isError: true, duration: 5000 });
+          }
+        } catch {
+          // fallback
+        }
+      }
+    }
+  }, [actionData]);
 
   const handleSendTest = () => {
     const form = new FormData();
@@ -187,56 +225,49 @@ export default function SettingsPage() {
     <Page
       fullWidth
       title="Settings"
-      subtitle="Configure store profile, default test number, and WhatsApp registration."
+      subtitle="Configure store profile, customer notification preferences, and default test number."
     >
       <BlockStack gap="500">
-        {actionData?.message && (
-          <Banner title="Success" tone="success" onDismiss={() => {}}>
-            {actionData.message}
-          </Banner>
-        )}
-
-        {actionData?.error && (
-          <Banner title="Action Failed" tone="critical" onDismiss={() => {}}>
-            {actionData.error}
-          </Banner>
-        )}
-
         <Layout>
+          {/* Main Configuration Section */}
           <Layout.Section>
             <BlockStack gap="500">
-              {/* WhatsApp Cloud API Number Activation Card */}
+              {/* WhatsApp Registration PIN Card */}
               <Card>
                 <BlockStack gap="400">
                   <InlineStack align="space-between">
                     <Text as="h2" variant="headingMd">
                       📱 WhatsApp Cloud API Phone Activation
                     </Text>
-                    <Badge tone="success">Active</Badge>
+                    <Badge tone={merchant?.isWhatsAppConnected ? "success" : "attention"}>
+                      {merchant?.isWhatsAppConnected ? "Active" : "Disconnected"}
+                    </Badge>
                   </InlineStack>
                   <Text as="p" tone="subdued">
                     Meta requires each WhatsApp Phone Number to be registered with a 6-digit PIN before dispatches begin.
                   </Text>
                   <Divider />
+
                   <TextField
                     label="Connected Phone ID"
-                    value={merchant.phoneNumberId || "Not Connected"}
+                    value={merchant?.phoneNumberId || "Not Connected"}
                     disabled
                     autoComplete="off"
                   />
-                  <InlineStack gap="300" align="end">
+
+                  <InlineStack gap="300" blockAlign="end">
                     <div style={{ flex: 1 }}>
                       <TextField
                         label="6-Digit Verification PIN"
+                        type="password"
                         value={registerPin}
                         onChange={setRegisterPin}
                         autoComplete="off"
-                        type="password"
                         helpText="Default: 123456"
                       />
                     </div>
                     <Button
-                      variant="secondary"
+                      tone="success"
                       loading={isLoading && fetcher.formData?.get("intent") === "registerPhone"}
                       onClick={handleRegisterPhone}
                     >
@@ -246,11 +277,54 @@ export default function SettingsPage() {
                 </BlockStack>
               </Card>
 
-              {/* Live Test Sender Card */}
+              {/* Customer Notifications Management Card */}
+              <Card>
+                <BlockStack gap="400">
+                  <InlineStack align="space-between">
+                    <Text as="h2" variant="headingMd">
+                      🔔 Customer Notification Alerts & Triggers
+                    </Text>
+                    <Badge tone="info">Live Feed Active</Badge>
+                  </InlineStack>
+                  <Text as="p" tone="subdued">
+                    Control which real-time customer WhatsApp actions trigger alerts across your StorePing workspace and Dashboard.
+                  </Text>
+                  <Divider />
+
+                  <BlockStack gap="300">
+                    <Checkbox
+                      label="Order & Delivery Address Confirmations"
+                      helpText="Display live alert when customer confirms their delivery address on WhatsApp."
+                      checked={notifyConfirm}
+                      onChange={setNotifyConfirm}
+                    />
+                    <Checkbox
+                      label="Customer Address & Mobile Update Requests"
+                      helpText="Highlight orders requiring merchant review when a customer notes an address change on WhatsApp."
+                      checked={notifyAddressUpdate}
+                      onChange={setNotifyAddressUpdate}
+                    />
+                    <Checkbox
+                      label="New Inbound WhatsApp Chat Messages"
+                      helpText="Notify on incoming 2-way customer inquiries in Live Inbox."
+                      checked={notifyInboundChat}
+                      onChange={setNotifyInboundChat}
+                    />
+                    <Checkbox
+                      label="Abandoned Cart Conversions & Recovery"
+                      helpText="Show real-time notifications when a recovered customer completes checkout."
+                      checked={notifyRecovery}
+                      onChange={setNotifyRecovery}
+                    />
+                  </BlockStack>
+                </BlockStack>
+              </Card>
+
+              {/* Live WhatsApp Test Sender Card */}
               <Card>
                 <BlockStack gap="400">
                   <Text as="h2" variant="headingMd">
-                    📲 Live WhatsApp Test Sender (Custom Brand Text)
+                    🚀 Live WhatsApp Test Sender (Custom Brand Text)
                   </Text>
                   <Text as="p" tone="subdued">
                     Send a customized live test message with your store name, rich formatting, and interactive buttons.

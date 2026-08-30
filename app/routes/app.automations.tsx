@@ -1,6 +1,6 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Page,
   Layout,
@@ -151,6 +151,25 @@ export default function AutomationsPage() {
   const [discountCode, setDiscountCode] = useState(merchant?.cartDiscountCode ?? "SAVE10");
 
   const isSubmitting = fetcher.state !== "idle";
+
+  // Floating Toast Notification Handler (No top banners)
+  useEffect(() => {
+    if (fetcher.data) {
+      if (fetcher.data.message) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(fetcher.data.message, { duration: 4000 });
+          }
+        } catch {}
+      } else if (fetcher.data.error) {
+        try {
+          if (typeof window !== "undefined" && (window as any).shopify?.toast) {
+            (window as any).shopify.toast.show(fetcher.data.error, { isError: true, duration: 5000 });
+          }
+        } catch {}
+      }
+    }
+  }, [fetcher.data]);
 
   const handleSave = () => {
     const form = new FormData();
@@ -359,18 +378,6 @@ export default function AutomationsPage() {
       }
     >
       <BlockStack gap="500">
-        {fetcher.data?.message && (
-          <Banner title="Action Completed" tone="success" onDismiss={() => {}}>
-            {fetcher.data.message}
-          </Banner>
-        )}
-
-        {fetcher.data?.error && (
-          <Banner title="Notice" tone="critical">
-            {fetcher.data.error}
-          </Banner>
-        )}
-
         <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
           <Box padding="400">
             {selectedTab === 0 ? (
