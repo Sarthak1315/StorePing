@@ -1124,11 +1124,11 @@ export default function LiveInboxPage() {
           <FormLayout>
             <TextField
               label="Recipient Mobile Number"
-              placeholder="+91 9374626600 or 9512534389"
+              placeholder={merchant?.phone ? `+${merchant.phone.replace(/[^0-9]/g, "")}` : "+91 9876543210"}
               value={newPhone}
               onChange={setNewPhone}
               autoComplete="off"
-              helpText="Include country code (e.g. +91 9374626600). 10-digit Indian numbers auto-prefix with 91."
+              helpText="Include country code (e.g. +91 9876543210). 10-digit Indian numbers auto-prefix with 91."
             />
             <TextField
               label="Customer Name (Optional)"

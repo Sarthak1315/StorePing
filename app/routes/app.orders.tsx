@@ -533,7 +533,7 @@ export default function OrdersManualPage() {
       cart_items: selectedOrder.items || "Selected Items",
       items: selectedOrder.items || "Selected Items",
       shipping_address: selectedOrder.shippingAddress || "123 Main St, City, State",
-      customer_phone: customPhone || "919374626600",
+      customer_phone: customPhone || (merchant?.phone ? merchant.phone.replace(/[^0-9]/g, "") : "919876543210"),
       tracking_url: `https://${shop}/account/orders`,
       store_name: merchant?.name || shop.replace(".myshopify.com", ""),
       discount_code: "SAVE10",
@@ -904,7 +904,7 @@ export default function OrdersManualPage() {
 
             <TextField
               label="Recipient WhatsApp Mobile Phone"
-              placeholder="+91 9374626600"
+              placeholder={merchant?.phone ? `+${merchant.phone.replace(/[^0-9]/g, "")}` : "+91 9876543210"}
               value={customPhone}
               onChange={setCustomPhone}
               autoComplete="off"
@@ -998,11 +998,11 @@ export default function OrdersManualPage() {
             </Text>
             <TextField
               label="Customer WhatsApp Number"
-              placeholder="+91 9374626600"
+              placeholder={merchant?.phone ? `+${merchant.phone.replace(/[^0-9]/g, "")}` : "+91 9876543210"}
               value={cartPhone}
               onChange={setCartPhone}
               autoComplete="off"
-              helpText="Include country code (e.g. +91 9374626600)."
+              helpText="Include country code (e.g. +91 9876543210)."
             />
             <Text as="p" variant="bodyXs" tone="subdued">
               Includes a 1-click checkout recovery link with discount code <b>{selectedCart?.discountCode || "SAVE10"}</b>.

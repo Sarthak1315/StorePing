@@ -122,6 +122,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const storeName = formData.get("storeName") as string;
   const currency = formData.get("currency") as string;
   const timezone = formData.get("timezone") as string;
+  const defaultPhone = (formData.get("defaultPhone") as string || "").trim();
 
   await db.merchant.update({
     where: { shop },
@@ -129,22 +130,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       name: storeName,
       currency,
       timezone,
+      phone: defaultPhone || null,
     },
   });
 
   await logInfo("Merchant settings updated", { shop, source: "settings" });
 
-  return json({ success: true, message: "Settings saved successfully." });
+  return json({ success: true, message: "Settings and default test phone saved successfully." });
 };
 
 export default function SettingsPage() {
   const { merchant } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
-  const [testPhone, setTestPhone] = useState(merchant?.phone || "9374626600");
+  const [testPhone, setTestPhone] = useState(merchant?.phone || "");
+  const [defaultPhone, setDefaultPhone] = useState(merchant?.phone || "");
   const [testMode, setTestMode] = useState("custom");
   const [customText, setCustomText] = useState(
-    `👋 *Hello from Everon Lab!*\n\nThis is your customized WhatsApp notification from StorePing.\n\nYour cart recovery, order updates, and live alerts are 100% operational! 🚀`
+    `👋 *Hello from ${merchant?.name || "StorePing"}!*\n\nThis is your customized WhatsApp notification from StorePing.\n\nYour cart recovery, order updates, and live alerts are 100% operational! 🚀`
   );
   const [registerPin, setRegisterPin] = useState("123456");
   const [storeName, setStoreName] = useState(merchant?.name || "Everon Lab Store");
@@ -157,7 +160,7 @@ export default function SettingsPage() {
   const handleSendTest = () => {
     const form = new FormData();
     form.append("intent", "sendTestMessage");
-    form.append("testPhone", testPhone);
+    form.append("testPhone", testPhone || defaultPhone);
     form.append("testMode", testMode);
     form.append("customMessageText", customText);
     fetcher.submit(form, { method: "POST" });
@@ -176,6 +179,7 @@ export default function SettingsPage() {
     form.append("storeName", storeName);
     form.append("currency", currency);
     form.append("timezone", timezone);
+    form.append("defaultPhone", defaultPhone);
     fetcher.submit(form, { method: "POST" });
   };
 
@@ -257,8 +261,8 @@ export default function SettingsPage() {
                     value={testPhone}
                     onChange={setTestPhone}
                     autoComplete="off"
-                    placeholder="9374626600"
-                    helpText="Standard 10-digit Indian mobile number or international E.164 (e.g. +91 9374626600)"
+                    placeholder={defaultPhone || "e.g. 9876543210 or +91 9876543210"}
+                    helpText="Enter a 10-digit Indian mobile number or international E.164 (e.g. +91 9876543210)"
                   />
 
                   <Select
@@ -307,6 +311,14 @@ export default function SettingsPage() {
                     onChange={setStoreName}
                     autoComplete="off"
                     helpText="Used in WhatsApp message headers and order recovery links."
+                  />
+                  <TextField
+                    label="Default WhatsApp Test Mobile Number"
+                    value={defaultPhone}
+                    onChange={setDefaultPhone}
+                    autoComplete="off"
+                    placeholder="e.g. 9876543210 or +91 9876543210"
+                    helpText="Saved default phone number used across message preview simulators and 1-click testing."
                   />
                   <Select
                     label="Store Currency"

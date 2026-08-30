@@ -71,7 +71,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // 1. Handle Test Message Sending from Templates Page
   if (actionType === "SEND_TEST") {
-    let testPhone = (formData.get("testPhone") as string) || "9374626600";
+    let testPhone = (formData.get("testPhone") as string) || merchant?.phone || "0000000000";
     testPhone = testPhone.replace(/[^0-9]/g, "");
     if (testPhone.length === 10) testPhone = `91${testPhone}`;
 
@@ -239,7 +239,13 @@ export default function TemplatesAndSimulatorPage() {
   const [buttonType, setButtonType] = useState<string>(currentTemplate?.buttonType || "MULTI_BUTTON");
   const [buttonText, setButtonText] = useState<string>(currentTemplate?.buttonText || "");
   const [buttonUrl, setButtonUrl] = useState<string>(currentTemplate?.buttonUrl || "");
-  const [testPhoneNumber, setTestPhoneNumber] = useState<string>("+91 9374626600");
+  const [testPhoneNumber, setTestPhoneNumber] = useState<string>(
+    merchant?.phone
+      ? merchant.phone.startsWith("+")
+        ? merchant.phone
+        : `+${merchant.phone}`
+      : "+91 9876543210"
+  );
 
   // Update editor state when selecting different template event
   const handleSelectTemplate = (eventKey: string) => {
@@ -307,7 +313,7 @@ export default function TemplatesAndSimulatorPage() {
     total_amount: "2,499.00",
     currency: "INR",
     shipping_address: "Flat 402, Royal Residency, MG Road, Mumbai, Maharashtra 400001",
-    customer_phone: "919374626600",
+    customer_phone: merchant?.phone ? merchant.phone.replace(/[^0-9]/g, "") : "919876543210",
     cart_items: "Silk Embroidered Sherwani (x1), Royal Dupatta (x1)",
     items: "Silk Embroidered Sherwani (x1), Royal Dupatta (x1)",
     store_name: merchant.name || merchant.shop.replace(".myshopify.com", ""),
@@ -802,7 +808,7 @@ export default function TemplatesAndSimulatorPage() {
                     value={testPhoneNumber}
                     onChange={setTestPhoneNumber}
                     autoComplete="off"
-                    helpText="Include country code (e.g. +91 9374626600)"
+                    helpText="Include country code (e.g. +91 9876543210)"
                   />
                   <Button
                     variant="primary"

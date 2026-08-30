@@ -37,6 +37,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       wabaId: true,
       qualityRating: true,
       messagingLimit: true,
+      phone: true,
     },
   });
 
@@ -48,6 +49,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     wabaId: merchant?.wabaId ?? "2066881594231087",
     qualityRating: merchant?.qualityRating ?? "GREEN",
     messagingLimit: merchant?.messagingLimit ?? "TIER_250",
+    phone: merchant?.phone ?? "",
     metaAppId: process.env.META_APP_ID ?? "",
     metaConfigId: process.env.META_CONFIG_ID ?? "",
     webhookUrl: "https://storeping.everonlab.in/api/meta/webhook",
@@ -88,7 +90,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const merchant = await db.merchant.findUnique({ where: { shop } });
     if (!merchant) throw new Response("Merchant not found", { status: 404 });
 
-    const customerPhone = (formData.get("customerPhone") as string || "919374626600").replace(/[^0-9]/g, "");
+    const customerPhone = (formData.get("customerPhone") as string || merchant.phone || "919876543210").replace(/[^0-9]/g, "");
     const messageText = (formData.get("messageText") as string || "Hello! StorePing live chat is working perfectly.").trim();
 
     const conv = await db.conversation.upsert({
@@ -487,7 +489,7 @@ export default function ConnectWhatsAppPage() {
                   onClick={() => {
                     const form = new FormData();
                     form.append("intent", "simulateIncoming");
-                    form.append("customerPhone", "919374626600");
+                    form.append("customerPhone", loaderData.phone ? loaderData.phone.replace(/[^0-9]/g, "") : "919876543210");
                     form.append("messageText", "Hello! I am inquiring about my order #1001. 😊");
                     fetcher.submit(form, { method: "POST" });
                   }}

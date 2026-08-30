@@ -89,7 +89,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const contacts = value.contacts || [];
 
         for (const msg of messages) {
-          const rawFromPhone = msg.from; // e.g. "919374626600"
+          const rawFromPhone = msg.from; // e.g. "919876543210"
           const profileName = contacts.find((c: any) => c.wa_id === rawFromPhone)?.profile?.name;
           const metaMessageId = msg.id;
           const fromPhone = rawFromPhone.replace(/[^0-9]/g, "");
