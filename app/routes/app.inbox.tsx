@@ -527,8 +527,8 @@ export default function LiveInboxPage() {
   return (
     <Page
       fullWidth
-      title="Live Inbox & 2-Way Chat"
-      subtitle="Real-time 2-way customer WhatsApp conversations, address confirmations, photo attachments, and order support."
+      title="Inbox"
+      subtitle="Real-time 2-way customer WhatsApp conversations, address confirmations, and order support."
       primaryAction={{
         content: "➕ Start Chat with New Number",
         onAction: () => setIsModalOpen(true),

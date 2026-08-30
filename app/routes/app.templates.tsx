@@ -357,8 +357,8 @@ export default function TemplatesAndSimulatorPage() {
   return (
     <Page
       fullWidth
-      title="WhatsApp Message Templates & Live Simulator"
-      subtitle="Create, customize, and test WhatsApp message templates with interactive buttons directly on your phone."
+      title="Templates"
+      subtitle="Create, customize, and test WhatsApp message templates with interactive buttons."
     >
       <BlockStack gap="500">
         {actionData?.testSent && (

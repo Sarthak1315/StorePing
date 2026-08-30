@@ -113,7 +113,7 @@ export default function DashboardOverview() {
           onAction: () => navigate("/app/orders"),
         },
         {
-          content: "💬 Live Inbox",
+          content: "💬 Inbox",
           onAction: () => navigate("/app/inbox"),
         },
       ]}

@@ -186,8 +186,8 @@ export default function SettingsPage() {
   return (
     <Page
       fullWidth
-      title="StorePing Settings & Testing"
-      subtitle="Configure your store profile, custom notification testing, and WhatsApp registration."
+      title="Settings"
+      subtitle="Configure store profile, default test number, and WhatsApp registration."
     >
       <BlockStack gap="500">
         {actionData?.message && (

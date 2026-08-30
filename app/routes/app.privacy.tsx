@@ -100,8 +100,8 @@ export default function PrivacyPage() {
   return (
     <Page
       fullWidth
-      title="Privacy & DPDP Compliance"
-      subtitle="Digital Personal Data Protection (DPDP Act 2023) & GDPR Data Governance Center."
+      title="Privacy"
+      subtitle="DPDP Act 2023 & GDPR data governance and compliance center."
     >
       <Layout>
         {fetcher.data && "message" in fetcher.data && (

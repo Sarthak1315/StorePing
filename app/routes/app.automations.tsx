@@ -339,8 +339,8 @@ export default function AutomationsPage() {
   return (
     <Page
       fullWidth
-      title="Store Automation Engine & Live Job Queue"
-      subtitle="Monitor live queued WhatsApp triggers, control current automation position, or stop/cancel messages."
+      title="Automations"
+      subtitle="Manage WhatsApp triggers, delivery schedules, and queued notifications."
       primaryAction={{
         content: "Save Automations",
         onAction: handleSave,

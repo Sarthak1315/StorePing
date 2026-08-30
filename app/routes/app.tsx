@@ -92,12 +92,12 @@ export default function App() {
       <NavMenu>
         <Link to="/app" rel="home">Dashboard</Link>
         <Link to="/app/orders">Orders</Link>
-        <Link to="/app/inbox">Live Inbox & Search</Link>
-        <Link to="/app/automations">Automations (7 Flows)</Link>
-        <Link to="/app/templates">Templates & Simulator</Link>
+        <Link to="/app/inbox">Inbox</Link>
+        <Link to="/app/automations">Automations</Link>
+        <Link to="/app/templates">Templates</Link>
         <Link to="/app/connect">Connect WhatsApp</Link>
         <Link to="/app/analytics">Analytics</Link>
-        <Link to="/app/privacy">DPDP Privacy</Link>
+        <Link to="/app/privacy">Privacy</Link>
         <Link to="/app/settings">Settings</Link>
       </NavMenu>
 
