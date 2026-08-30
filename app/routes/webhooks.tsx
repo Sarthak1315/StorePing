@@ -20,13 +20,34 @@ export const loader = async (args: LoaderFunctionArgs) => {
 export const action = async (args: ActionFunctionArgs) => {
   const { request } = args;
 
-  // Check if incoming request is from Meta WhatsApp Cloud API
-  const isShopify = request.headers.get("X-Shopify-Topic") || request.headers.get("X-Shopify-Hmac-Sha256");
+  // Case-insensitive check for Shopify webhook headers
+  const isShopify =
+    request.headers.get("x-shopify-topic") ||
+    request.headers.get("X-Shopify-Topic") ||
+    request.headers.get("x-shopify-hmac-sha256") ||
+    request.headers.get("X-Shopify-Hmac-Sha256");
+
   if (!isShopify) {
     return metaAction(args);
   }
 
-  const { topic, shop, payload } = await authenticate.webhook(request);
+  let topic = "UNKNOWN";
+  let shop = "";
+  let payload: any = {};
+
+  try {
+    const auth = await authenticate.webhook(request);
+    topic = auth.topic;
+    shop = auth.shop;
+    payload = auth.payload;
+  } catch (authErr: any) {
+    await logWarn(`Shopify webhook auth notice: ${authErr.message}`, { source: "webhook" });
+    return new Response("OK", { status: 200 });
+  }
+
+  if (!shop) {
+    return new Response("OK", { status: 200 });
+  }
 
   const merchant = await db.merchant.findUnique({
     where: { shop },

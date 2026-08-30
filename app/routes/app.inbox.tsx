@@ -98,17 +98,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       );
     }
 
-    // Fetch active templates for the template picker modal
-    const templates = await db.template.findMany({
-      where: { merchantId: merchant.id, isActive: true },
-      orderBy: { createdAt: "asc" },
-    });
-
-    // Fetch all order confirmation status records
-    const confirmations = await db.orderConfirmation.findMany({
-      where: { merchantId: merchant.id },
-    });
-
     // Build optimized database search filter
     const whereClause: any = {
       merchantId: merchant.id,
@@ -124,18 +113,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ];
     }
 
-    // Fetch conversations with indexed sorting & latest messages limit
-    const conversations = (await db.conversation.findMany({
-      where: whereClause,
-      orderBy: { lastMessageAt: "desc" },
-      include: {
-        messages: {
-          orderBy: { createdAt: "asc" },
-          take: 50,
+    // Parallel fetch: templates + order confirmations + active conversations in 1 roundtrip
+    const [templates, confirmations, conversations] = await Promise.all([
+      db.template.findMany({
+        where: { merchantId: merchant.id, isActive: true },
+        orderBy: { createdAt: "asc" },
+      }),
+      db.orderConfirmation.findMany({
+        where: { merchantId: merchant.id },
+      }),
+      db.conversation.findMany({
+        where: whereClause,
+        orderBy: { lastMessageAt: "desc" },
+        include: {
+          messages: {
+            orderBy: { createdAt: "asc" },
+            take: 50,
+          },
         },
-      },
-      take: 100,
-    })) as ConversationType[];
+        take: 100,
+      }) as Promise<ConversationType[]>,
+    ]);
 
     const activeConversation: ConversationType | null =
       conversations.find((c) => c.customerPhone === selectedPhone) || conversations[0] || null;

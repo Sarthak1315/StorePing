@@ -1,5 +1,6 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
-import { Link, Outlet, useLoaderData, useRouteError, isRouteErrorResponse } from "@remix-run/react";
+import { Link, Outlet, useLoaderData, useNavigation, useRouteError, isRouteErrorResponse } from "@remix-run/react";
+import { useEffect } from "react";
 import { boundary } from "@shopify/shopify-app-remix/server";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
@@ -25,9 +26,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function App() {
   const { apiKey } = useLoaderData<typeof loader>();
+  const navigation = useNavigation();
+  const isLoading = navigation.state === "loading" || navigation.state === "submitting";
+
+  // Sync with Shopify App Bridge top-bar native loading indicator
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && (window as any).shopify?.loading) {
+        if (isLoading) {
+          (window as any).shopify.loading(true);
+        } else {
+          (window as any).shopify.loading(false);
+        }
+      }
+    } catch {
+      // Ignore if App Bridge loading is unavailable
+    }
+  }, [isLoading]);
 
   return (
     <AppProvider isEmbeddedApp apiKey={apiKey}>
+      {/* Top progress bar for route transitions */}
+      {isLoading && <div id="loading-bar" />}
+
       <NavMenu>
         <Link to="/app" rel="home">Dashboard</Link>
         <Link to="/app/orders">Orders & 1-Click Send</Link>
@@ -39,7 +60,16 @@ export default function App() {
         <Link to="/app/privacy">DPDP Privacy</Link>
         <Link to="/app/settings">Settings</Link>
       </NavMenu>
-      <Outlet />
+
+      <div
+        style={{
+          opacity: isLoading ? 0.75 : 1,
+          transition: "opacity 0.15s ease-in-out",
+          minHeight: "100vh",
+        }}
+      >
+        <Outlet />
+      </div>
     </AppProvider>
   );
 }
@@ -63,9 +93,7 @@ export function ErrorBoundary() {
       <Page title="StorePing Status">
         <BlockStack gap="400">
           <Banner tone="critical" title="Application Notice">
-            <p>
-              StorePing encountered an issue. Details are shown below:
-            </p>
+            <p>StorePing encountered an issue. Details are shown below:</p>
           </Banner>
 
           <Card>

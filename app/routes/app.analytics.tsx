@@ -30,13 +30,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   if (!merchant) throw new Response("Merchant not found", { status: 404 });
 
-  const totalSent = await db.messageLog.count({ where: { merchantId: merchant.id } });
-  const totalDelivered = await db.messageLog.count({ where: { merchantId: merchant.id, status: "DELIVERED" } });
-  const totalRead = await db.messageLog.count({ where: { merchantId: merchant.id, status: "READ" } });
-  const totalFailed = await db.messageLog.count({ where: { merchantId: merchant.id, status: "FAILED" } });
+  // Run all count metrics concurrently in 1 roundtrip
+  const [
+    totalSent,
+    totalDelivered,
+    totalRead,
+    totalFailed,
+    totalCarts,
+    recoveredCarts,
+  ] = await Promise.all([
+    db.messageLog.count({ where: { merchantId: merchant.id } }),
+    db.messageLog.count({ where: { merchantId: merchant.id, status: "DELIVERED" } }),
+    db.messageLog.count({ where: { merchantId: merchant.id, status: "READ" } }),
+    db.messageLog.count({ where: { merchantId: merchant.id, status: "FAILED" } }),
+    db.cartRecovery.count({ where: { merchantId: merchant.id } }),
+    db.cartRecovery.count({ where: { merchantId: merchant.id, status: "RECOVERED" } }),
+  ]);
 
-  const totalCarts = await db.cartRecovery.count({ where: { merchantId: merchant.id } });
-  const recoveredCarts = await db.cartRecovery.count({ where: { merchantId: merchant.id, status: "RECOVERED" } });
   const recoveredAmount = merchant.cartRecoveries
     .filter((c) => c.status === "RECOVERED")
     .reduce((acc, curr) => acc + curr.cartTotal, 0);

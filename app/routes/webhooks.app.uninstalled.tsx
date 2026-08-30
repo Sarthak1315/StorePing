@@ -4,23 +4,27 @@ import db from "../db.server";
 import { logInfo, logWarn } from "../utils/logger.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, session, topic } = await authenticate.webhook(request);
+  try {
+    const { shop, session, topic } = await authenticate.webhook(request);
 
-  await logInfo(`Received app/uninstalled webhook for ${shop}`, { shop, source: "webhook", details: { topic } });
+    await logInfo(`Received app/uninstalled webhook for ${shop}`, { shop, source: "webhook", details: { topic } });
 
-  if (session) {
-    await db.session.deleteMany({ where: { shop } });
+    if (session) {
+      await db.session.deleteMany({ where: { shop } });
+    }
+
+    // Deactivate WhatsApp connection for uninstalled shop
+    await db.merchant.updateMany({
+      where: { shop },
+      data: {
+        isWhatsAppConnected: false,
+        alertType: "NONE",
+        alertMessage: null,
+      },
+    });
+  } catch (err: any) {
+    await logWarn(`app/uninstalled webhook error: ${err.message}`, { source: "webhook" });
   }
-
-  // Deactivate WhatsApp connection for uninstalled shop
-  await db.merchant.updateMany({
-    where: { shop },
-    data: {
-      isWhatsAppConnected: false,
-      alertType: "NONE",
-      alertMessage: null,
-    },
-  });
 
   return new Response("App uninstalled handled", { status: 200 });
 };

@@ -30,6 +30,7 @@ import { logInfo, logError } from "../utils/logger.server";
 import { normalizePhoneNumber } from "../utils/phone.utils";
 import { seedDefaultTemplates } from "../utils/template.server";
 import { interpolateVariables } from "../utils/template.shared";
+import { syncOrderUpdateToShopify } from "../utils/shopify-order.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
@@ -45,15 +46,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     });
   }
 
-  // Ensure default templates exist
-  await seedDefaultTemplates(merchant.id);
+  const debugErrors: string[] = [];
 
-  let ordersList: any[] = [];
-  let debugErrors: string[] = [];
-
-  // 1. Fetch Placed / Completed Shopify Orders (e.g. #1001, #1002)
-  try {
-    const ordersRes = await admin.graphql(`
+  // Parallel Query Execution: Shopify GraphQL + Database records all fetched concurrently!
+  const [ordersRes, confirmations, templates, abandonedCarts] = await Promise.all([
+    admin.graphql(`
       #graphql
       query getOrdersForWhatsApp {
         orders(first: 50, sortKey: CREATED_AT, reverse: true) {
@@ -103,8 +100,24 @@ export async function loader({ request }: LoaderFunctionArgs) {
           }
         }
       }
-    `);
+    `),
+    db.orderConfirmation.findMany({
+      where: { merchantId: merchant.id },
+    }),
+    db.template.findMany({
+      where: { merchantId: merchant.id },
+      orderBy: { createdAt: "asc" },
+    }),
+    db.cartRecovery.findMany({
+      where: { merchantId: merchant.id },
+      orderBy: { createdAt: "desc" },
+      take: 30,
+    }),
+  ]);
 
+  let ordersList: any[] = [];
+
+  try {
     const ordersJson = await ordersRes.json();
     if (ordersJson.errors && ordersJson.errors.length > 0) {
       debugErrors.push(`Orders query: ${ordersJson.errors.map((e: any) => e.message).join(", ")}`);
@@ -162,120 +175,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     debugErrors.push(`Orders fetch error: ${err.message}`);
   }
 
-  // 2. Fetch Draft Orders (e.g. #D1, #D2)
-  try {
-    const draftRes = await admin.graphql(`
-      #graphql
-      query getDraftOrdersForWhatsApp {
-        draftOrders(first: 50, reverse: true) {
-          nodes {
-            id
-            name
-            createdAt
-            phone
-            totalPriceSet {
-              shopMoney {
-                amount
-                currencyCode
-              }
-            }
-            status
-            customer {
-              displayName
-              phone
-              defaultPhoneNumber {
-                phoneNumber
-              }
-            }
-            shippingAddress {
-              name
-              address1
-              address2
-              city
-              province
-              zip
-              country
-              phone
-            }
-            billingAddress {
-              phone
-            }
-            lineItems(first: 5) {
-              nodes {
-                title
-                quantity
-              }
-            }
-          }
-        }
-      }
-    `);
-
-    const draftJson = await draftRes.json();
-    if (draftJson.errors && draftJson.errors.length > 0) {
-      debugErrors.push(`Draft orders query: ${draftJson.errors.map((e: any) => e.message).join(", ")}`);
-    }
-
-    if (draftJson.data?.draftOrders?.nodes) {
-      const fetchedDrafts = draftJson.data.draftOrders.nodes.map((node: any) => {
-        const rawPhone =
-          node.phone ||
-          node.shippingAddress?.phone ||
-          node.customer?.defaultPhoneNumber?.phoneNumber ||
-          node.customer?.phone ||
-          node.billingAddress?.phone ||
-          "";
-        const phone = normalizePhoneNumber(rawPhone);
-        const customerName =
-          node.customer?.displayName ||
-          node.shippingAddress?.name ||
-          "Customer";
-
-        const addr = node.shippingAddress || node.billingAddress || {};
-        const addressParts = [
-          addr.address1,
-          addr.address2,
-          addr.city,
-          addr.province,
-          addr.zip,
-          addr.country,
-        ].filter(Boolean);
-        const shippingAddress = addressParts.length > 0 ? addressParts.join(", ") : "Standard Delivery Address";
-
-        const items = (node.lineItems?.nodes || [])
-          .map((li: any) => `${li.title} (x${li.quantity})`)
-          .join(", ") || "Ordered Items";
-
-        return {
-          id: node.id,
-          orderNumber: node.name,
-          createdAt: node.createdAt,
-          total: `${node.totalPriceSet?.shopMoney?.currencyCode || "INR"} ${node.totalPriceSet?.shopMoney?.amount || "0.00"}`,
-          totalAmount: node.totalPriceSet?.shopMoney?.amount || "0.00",
-          currency: node.totalPriceSet?.shopMoney?.currencyCode || "INR",
-          financialStatus: node.status === "COMPLETED" ? "COMPLETED" : "OPEN (DRAFT)",
-          fulfillmentStatus: "DRAFT",
-          customerName,
-          phone,
-          shippingAddress,
-          items,
-          isDraft: true,
-        };
-      });
-      ordersList.push(...fetchedDrafts);
-    }
-  } catch (err: any) {
-    debugErrors.push(`Draft orders error: ${err.message}`);
-  }
-
-  // Sort combined orders by date descending
-  ordersList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  // 3. Fetch Order Confirmation Records from DB
-  const confirmations = await db.orderConfirmation.findMany({
-    where: { merchantId: merchant.id },
-  });
-
+  // Build confirmation lookup map in O(1)
   const confirmationMap = new Map<string, any>();
   confirmations.forEach((c) => {
     confirmationMap.set(c.orderNumber, c);
@@ -287,24 +187,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const record = confirmationMap.get(o.orderNumber) || confirmationMap.get(o.orderNumber.replace(/^#/, ""));
     return {
       ...o,
-      confirmationStatus: record?.status || "NOT_SENT", // NOT_SENT, PENDING, CONFIRMED, UPDATE_REQUESTED, CANCELLED
+      confirmationStatus: record?.status || "NOT_SENT",
       confirmedAt: record?.confirmedAt ? new Date(record.confirmedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }) : null,
       customerNotes: record?.customerNotes || null,
       lastSentAt: record?.lastSentAt || null,
     };
-  });
-
-  // 4. Fetch Active Templates for Template Selector Modal
-  const templates = await db.template.findMany({
-    where: { merchantId: merchant.id },
-    orderBy: { createdAt: "asc" },
-  });
-
-  // 5. Fetch Abandoned Carts from Database
-  const abandonedCarts = await db.cartRecovery.findMany({
-    where: { merchantId: merchant.id },
-    orderBy: { createdAt: "desc" },
-    take: 30,
   });
 
   return json({
@@ -521,6 +408,35 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
+  // 3. Sync Confirmation or Customer Address Note directly to Shopify Admin Order
+  if (intent === "syncToShopify") {
+    const orderId = (formData.get("orderId") as string) || "";
+    const orderNumber = (formData.get("orderNumber") as string) || "";
+    const status = (formData.get("status") as any) || "CONFIRMED";
+    const customerNotes = (formData.get("customerNotes") as string) || "";
+
+    const syncRes = await syncOrderUpdateToShopify({
+      shop,
+      orderId,
+      orderNumber,
+      status,
+      customerNotes,
+    });
+
+    if (!syncRes.success) {
+      return json<ActionData>(
+        { success: false, error: syncRes.error || "Failed to update order in Shopify Admin." },
+        { status: 500 }
+      );
+    }
+
+    return json<ActionData>({
+      success: true,
+      orderNumber,
+      message: `Order ${orderNumber} note and tags successfully updated in Shopify Admin! 🎉`,
+    });
+  }
+
   return json<ActionData>({ success: true });
 }
 
@@ -550,6 +466,16 @@ export default function OrdersManualPage() {
     setSelectedEventType(defaultEvent);
     setCustomPhone(order.phone || "");
     setIsOrderModalOpen(true);
+  };
+
+  const handleSyncToShopify = (order: any) => {
+    const form = new FormData();
+    form.append("intent", "syncToShopify");
+    form.append("orderId", order.id);
+    form.append("orderNumber", order.orderNumber);
+    form.append("status", order.confirmationStatus);
+    form.append("customerNotes", order.customerNotes || "");
+    fetcher.submit(form, { method: "POST" });
   };
 
   const handleSendOrderWhatsApp = () => {
@@ -718,6 +644,17 @@ export default function OrdersManualPage() {
         >
           💬 Chat
         </Button>
+      )}
+      {(order.confirmationStatus === "UPDATE_REQUESTED" || order.confirmationStatus === "CONFIRMED") && (
+        <Tooltip content="Sync confirmation tag & customer's address note directly into Shopify Admin Order">
+          <Button
+            size="slim"
+            onClick={() => handleSyncToShopify(order)}
+            loading={isSubmitting}
+          >
+            {order.confirmationStatus === "UPDATE_REQUESTED" ? "📝 Push to Shopify" : "🔄 Sync Shopify"}
+          </Button>
+        </Tooltip>
       )}
     </InlineStack>,
   ]);

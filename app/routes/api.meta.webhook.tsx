@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import db from "../db.server";
 import { logInfo, logWarn } from "../utils/logger.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
+import { syncOrderUpdateToShopify } from "../utils/shopify-order.server";
 
 /**
  * Meta Webhook Verification Handshake (GET).
@@ -179,7 +180,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               messageText.toLowerCase().includes("need help");
 
             if (isConfirmAction && matchingOrder) {
-              // 1. Mark Order as Confirmed
+              // 1. Mark Order as Confirmed in StorePing DB
               await db.orderConfirmation.update({
                 where: { id: matchingOrder.id },
                 data: {
@@ -187,6 +188,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   confirmedAt: new Date(),
                 },
               });
+
+              // 2. Sync Confirmation & Tag directly into Shopify Admin Order!
+              syncOrderUpdateToShopify({
+                shop: merchant.shop,
+                orderId: matchingOrder.orderId,
+                orderNumber: matchingOrder.orderNumber,
+                status: "CONFIRMED",
+              }).catch((err) => console.warn("Shopify order sync notice:", err));
 
               // Send Automated WhatsApp Confirmation Back to Customer
               const confirmReplyText = `🎉 *Order & Address Verified!*\n\nThank you ${profileName || matchingOrder.customerName || "there"}! Your order *${matchingOrder.orderNumber}* and delivery address have been verified.\n\nOur fulfillment team is now packing your items for dispatch. We will share your live tracking link as soon as your parcel is on its way! 🚚✨`;
@@ -200,13 +209,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 senderRole: "BOT",
               });
             } else if (isUpdateAddressAction && matchingOrder) {
-              // 2. Mark Order as Update Requested
+              // 1. Mark Order as Update Requested in StorePing DB
               await db.orderConfirmation.update({
                 where: { id: matchingOrder.id },
                 data: {
                   status: "UPDATE_REQUESTED",
                 },
               });
+
+              // 2. Tag order in Shopify Admin
+              syncOrderUpdateToShopify({
+                shop: merchant.shop,
+                orderId: matchingOrder.orderId,
+                orderNumber: matchingOrder.orderNumber,
+                status: "UPDATE_REQUESTED",
+              }).catch((err) => console.warn("Shopify order sync notice:", err));
 
               // Send Automated WhatsApp Prompt for New Address
               const promptReplyText = `✏️ *Address Update Request Received for ${matchingOrder.orderNumber}*\n\nPlease reply directly to this chat with your updated complete address and contact phone number. 📍\n\nOur support team will verify and update your delivery details in the system before shipping your order! 📦`;
@@ -238,6 +255,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   customerNotes: messageText,
                 },
               });
+
+              // 3. Immediately Push Customer's Address/Mobile Note into Shopify Admin Order!
+              await syncOrderUpdateToShopify({
+                shop: merchant.shop,
+                orderId: matchingOrder.orderId,
+                orderNumber: matchingOrder.orderNumber,
+                status: "UPDATE_REQUESTED",
+                customerNotes: messageText,
+              }).catch((err) => console.warn("Shopify order sync note notice:", err));
 
               // Auto-acknowledge receipt
               const ackText = `✅ *Thank you!*\nWe have received your updated details: \n_"${messageText}"_\n\nOur team has updated this on Order *${matchingOrder.orderNumber}*.`;

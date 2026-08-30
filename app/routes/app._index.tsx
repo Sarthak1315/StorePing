@@ -46,19 +46,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  // Seed default templates if first time
-  await seedDefaultTemplates(merchant.id);
-
-  // Refresh WABA health if connected
+  // Non-blocking WABA health check in background
   if (merchant.isWhatsAppConnected) {
-    await refreshWabaHealth(merchant.id);
+    refreshWabaHealth(merchant.id).catch(() => {});
   }
 
-  // Compute metrics
-  const totalSent = await db.messageLog.count({ where: { merchantId: merchant.id } });
-  const totalDelivered = await db.messageLog.count({ where: { merchantId: merchant.id, status: "DELIVERED" } });
-  const totalRead = await db.messageLog.count({ where: { merchantId: merchant.id, status: "READ" } });
-  const totalRecoveredCarts = await db.cartRecovery.count({ where: { merchantId: merchant.id, status: "RECOVERED" } });
+  // Compute all metrics concurrently in 1 roundtrip
+  const [totalSent, totalDelivered, totalRead, totalRecoveredCarts] = await Promise.all([
+    db.messageLog.count({ where: { merchantId: merchant.id } }),
+    db.messageLog.count({ where: { merchantId: merchant.id, status: "DELIVERED" } }),
+    db.messageLog.count({ where: { merchantId: merchant.id, status: "READ" } }),
+    db.cartRecovery.count({ where: { merchantId: merchant.id, status: "RECOVERED" } }),
+  ]);
 
   const recoveredRevenue = (merchant.cartRecoveries || []).reduce((acc, curr) => acc + curr.cartTotal, 0);
 

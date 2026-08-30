@@ -36,16 +36,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const merchant = await db.merchant.findUnique({
     where: { shop },
-  });
-
-  const jobs = merchant
-    ? await db.job.findMany({
-        where: { merchantId: merchant.id },
+    include: {
+      jobs: {
         orderBy: { createdAt: "desc" },
         take: 50,
-      })
-    : [];
+      },
+    },
+  });
 
+  const jobs = merchant?.jobs || [];
   const pendingCount = jobs.filter((j) => j.status === "PENDING" || j.status === "PROCESSING").length;
 
   return json({ merchant, jobs, pendingCount });
