@@ -67,11 +67,9 @@ export default function PortalLayout() {
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col md:flex-row font-sans selection:bg-emerald-500 selection:text-white relative">
-      {/* Top Global Progress Bar on Page Navigation / Form Submit */}
+      {/* Simple, clean, ultra-thin top progress line on route navigation */}
       {isNavigating && (
-        <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-300 animate-pulse shadow-md shadow-emerald-500/50">
-          <div className="h-full bg-white/30 animate-[spin_1s_ease-in-out_infinite]"></div>
-        </div>
+        <div className="fixed top-0 left-0 right-0 z-50 h-[2px] bg-emerald-500 transition-all duration-200 pointer-events-none" />
       )}
 
       {/* Left Sidebar - Fixed Width (w-68/w-72) & Full Height */}
