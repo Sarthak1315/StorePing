@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { Link, NavLink, Outlet, useLoaderData, useLocation, Form } from "@remix-run/react";
+import { Link, NavLink, Outlet, useLoaderData, useLocation, Form, useNavigation } from "@remix-run/react";
 import { requirePortalUser } from "../utils/portal-auth.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -15,6 +15,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
 export default function PortalLayout() {
   const { user } = useLoaderData<typeof loader>();
   const location = useLocation();
+  const navigationState = useNavigation();
+  const isNavigating = navigationState.state !== "idle";
 
   if (!user) {
     return <Outlet />;
@@ -63,7 +65,14 @@ export default function PortalLayout() {
   ];
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col md:flex-row font-sans selection:bg-emerald-500 selection:text-white">
+    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col md:flex-row font-sans selection:bg-emerald-500 selection:text-white relative">
+      {/* Top Global Progress Bar on Page Navigation / Form Submit */}
+      {isNavigating && (
+        <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-300 animate-pulse shadow-md shadow-emerald-500/50">
+          <div className="h-full bg-white/30 animate-[spin_1s_ease-in-out_infinite]"></div>
+        </div>
+      )}
+
       {/* Left Sidebar - Fixed Width (w-68/w-72) & Full Height */}
       <aside className="w-full md:w-68 lg:w-72 bg-slate-900 border-r border-slate-800 flex flex-col justify-between shrink-0 h-full overflow-y-auto">
         <div className="flex-1 flex flex-col min-h-0">

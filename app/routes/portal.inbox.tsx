@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { Form, useActionData, useLoaderData, useNavigation, useSearchParams } from "@remix-run/react";
+import { Form, Link, useActionData, useLoaderData, useNavigation, useSearchParams } from "@remix-run/react";
 import { useState } from "react";
 import db from "../db.server";
 import { requirePortalUser } from "../utils/portal-auth.server";
@@ -12,60 +12,55 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const selectedPhone = url.searchParams.get("phone");
   const filter = url.searchParams.get("filter") || "ALL";
 
-  // Fetch all conversations for this merchant
-  const conversations = await db.conversation.findMany({
-    where: { merchantId: user.merchantId },
-    orderBy: { lastMessageAt: "desc" },
-    include: {
-      messages: {
-        take: 1,
-        orderBy: { createdAt: "desc" },
-      },
-    },
-  });
-
-  // Fetch active conversation details if phone is selected
-  let activeConversation = null;
-  let activeOrder = null;
-
-  if (selectedPhone) {
-    activeConversation = await db.conversation.findUnique({
-      where: {
-        merchantId_customerPhone: {
-          merchantId: user.merchantId,
-          customerPhone: selectedPhone,
-        },
-      },
+  // Run all conversation, template, and active chat queries in parallel for ultra-fast response
+  const [conversations, templates, activeConversation, activeOrder] = await Promise.all([
+    db.conversation.findMany({
+      where: { merchantId: user.merchantId },
+      orderBy: { lastMessageAt: "desc" },
       include: {
         messages: {
-          orderBy: { createdAt: "asc" },
+          take: 1,
+          orderBy: { createdAt: "desc" },
         },
       },
-    });
+    }),
+    db.messageTemplate.findMany({
+      where: { merchantId: user.merchantId, isActive: true },
+      take: 6,
+    }),
+    selectedPhone
+      ? db.conversation.findUnique({
+          where: {
+            merchantId_customerPhone: {
+              merchantId: user.merchantId,
+              customerPhone: selectedPhone,
+            },
+          },
+          include: {
+            messages: {
+              orderBy: { createdAt: "asc" },
+            },
+          },
+        })
+      : Promise.resolve(null),
+    selectedPhone
+      ? db.orderConfirmation.findFirst({
+          where: {
+            merchantId: user.merchantId,
+            customerPhone: selectedPhone,
+          },
+          orderBy: { createdAt: "desc" },
+        })
+      : Promise.resolve(null),
+  ]);
 
-    // Mark messages as read when opening conversation
-    if (activeConversation && activeConversation.unreadCount > 0) {
-      await db.conversation.update({
-        where: { id: activeConversation.id },
-        data: { unreadCount: 0 },
-      });
-    }
-
-    // Find latest order confirmation for context drawer
-    activeOrder = await db.orderConfirmation.findFirst({
-      where: {
-        merchantId: user.merchantId,
-        customerPhone: selectedPhone,
-      },
-      orderBy: { createdAt: "desc" },
-    });
+  // Mark unread messages as read asynchronously without blocking UI
+  if (activeConversation && activeConversation.unreadCount > 0) {
+    db.conversation.update({
+      where: { id: activeConversation.id },
+      data: { unreadCount: 0 },
+    }).catch(() => {});
   }
-
-  // Pre-approved message templates for quick replies
-  const templates = await db.messageTemplate.findMany({
-    where: { merchantId: user.merchantId, isActive: true },
-    take: 6,
-  });
 
   return json({
     user,
@@ -288,9 +283,10 @@ export default function PortalInbox() {
                   : c.customerName;
 
               return (
-                <a
+                <Link
                   key={c.id}
-                  href={`/portal/inbox?phone=${c.customerPhone}`}
+                  to={`/portal/inbox?phone=${c.customerPhone}`}
+                  prefetch="intent"
                   className={`flex items-start gap-3 p-3 transition-all cursor-pointer block ${
                     isSelected
                       ? "bg-[#2a3942] border-l-4 border-[#00a884]"

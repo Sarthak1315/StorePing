@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { Form, useActionData, useLoaderData, useNavigation } from "@remix-run/react";
+import { Form, Link, useActionData, useLoaderData, useNavigation } from "@remix-run/react";
 import db from "../db.server";
 import { requireRole } from "../utils/portal-auth.server";
 
@@ -8,45 +8,42 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // Only SUPER_ADMIN allowed
   const user = await requireRole(request, ["SUPER_ADMIN"]);
 
-  // 1. Pending Approvals Queue
-  const pendingUsers = await db.user.findMany({
-    where: { approvalStatus: "PENDING" },
-    include: {
-      merchant: {
-        select: { id: true, shop: true, name: true },
-      },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  // 2. All Registered Stores & WABA stats
-  const allStores = await db.merchant.findMany({
-    include: {
-      _count: {
-        select: {
-          users: true,
-          messages: true,
-          conversations: true,
-          orderConfirmations: true,
+  // Run all global platform telemetry queries in parallel for instant sub-200ms response
+  const [pendingUsers, allStores, allUsers, totalDispatches, totalConversations] = await Promise.all([
+    db.user.findMany({
+      where: { approvalStatus: "PENDING" },
+      include: {
+        merchant: {
+          select: { id: true, shop: true, name: true },
         },
       },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  // 3. All Platform Users
-  const allUsers = await db.user.findMany({
-    include: {
-      merchant: {
-        select: { id: true, shop: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    db.merchant.findMany({
+      include: {
+        _count: {
+          select: {
+            users: true,
+            messages: true,
+            conversations: true,
+            orderConfirmations: true,
+          },
+        },
       },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+      orderBy: { createdAt: "desc" },
+    }),
+    db.user.findMany({
+      include: {
+        merchant: {
+          select: { id: true, shop: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+    db.messageLog.count(),
+    db.conversation.count(),
+  ]);
 
-  // Global Totals
-  const totalDispatches = await db.messageLog.count();
-  const totalConversations = await db.conversation.count();
   const activeWabas = allStores.filter((s) => s.isWhatsAppConnected).length;
 
   return json({
@@ -146,18 +143,20 @@ export default function SuperAdminDashboard() {
         </div>
 
         <div className="flex items-center gap-3">
-          <a
-            href="/portal/inbox"
+          <Link
+            to="/portal/inbox"
+            prefetch="intent"
             className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl text-xs border border-slate-700 transition"
           >
             💬 Open Global Inbox
-          </a>
-          <a
-            href="/portal/dashboard"
+          </Link>
+          <Link
+            to="/portal/dashboard"
+            prefetch="intent"
             className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition"
           >
             📊 Active Store Dashboard
-          </a>
+          </Link>
         </div>
       </div>
 
@@ -332,12 +331,13 @@ export default function SuperAdminDashboard() {
                   <td className="py-3.5 font-mono text-white">{s._count.messages}</td>
                   <td className="py-3.5 font-mono text-slate-400">{s._count.users} members</td>
                   <td className="py-3.5 text-right">
-                    <a
-                      href={`/portal/dashboard?shop=${s.shop}`}
+                    <Link
+                      to={`/portal/dashboard?shop=${s.shop}`}
+                      prefetch="intent"
                       className="px-3 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 font-semibold rounded-lg text-xs transition inline-flex items-center gap-1"
                     >
                       <span>🏬 Switch to Store</span>
-                    </a>
+                    </Link>
                   </td>
                 </tr>
               ))}

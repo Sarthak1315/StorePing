@@ -8,36 +8,37 @@ import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireRole(request, ["OWNER", "MANAGER"]);
 
-  const merchant = await db.merchant.findUnique({
-    where: { id: user.merchantId },
-    include: {
-      _count: {
-        select: {
-          messages: true,
-          conversations: true,
-          cartRecoveries: true,
-          orderConfirmations: true,
+  const [merchant, deliveredCount, readCount] = await Promise.all([
+    db.merchant.findUnique({
+      where: { id: user.merchantId },
+      include: {
+        _count: {
+          select: {
+            messages: true,
+            conversations: true,
+            cartRecoveries: true,
+            orderConfirmations: true,
+          },
+        },
+        messages: {
+          take: 10,
+          orderBy: { createdAt: "desc" },
         },
       },
-      messages: {
-        take: 10,
-        orderBy: { createdAt: "desc" },
-      },
-    },
-  });
+    }),
+    db.messageLog.count({
+      where: { merchantId: user.merchantId, status: "DELIVERED" },
+    }),
+    db.messageLog.count({
+      where: { merchantId: user.merchantId, status: "READ" },
+    }),
+  ]);
 
   if (!merchant) {
     throw new Response("Merchant not found", { status: 404 });
   }
 
-  // Aggregate message stats
   const totalSent = merchant._count.messages;
-  const deliveredCount = await db.messageLog.count({
-    where: { merchantId: merchant.id, status: "DELIVERED" },
-  });
-  const readCount = await db.messageLog.count({
-    where: { merchantId: merchant.id, status: "READ" },
-  });
 
   return json({
     user,
