@@ -239,12 +239,6 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ success: `Purged ${res.count} completed jobs from history.`, error: null as string | null });
   }
 
-  // 8. Purge API Logs
-  if (intent === "purge_api_logs") {
-    const res = await db.metaApiLog.deleteMany({});
-    return json({ success: `Cleared ${res.count} Meta API audit log entries.`, error: null as string | null });
-  }
-
   return json({ success: null as string | null, error: "Unknown action" }, { status: 400 });
 }
 
@@ -273,6 +267,13 @@ export default function SuperAdminDashboard() {
   const [apiStatusFilter, setApiStatusFilter] = useState("ALL");
   const [apiMethodFilter, setApiMethodFilter] = useState("ALL");
   const [selectedApiLog, setSelectedApiLog] = useState<(typeof apiLogs)[number] | null>(null);
+
+  // Export Modal State
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportRangePreset, setExportRangePreset] = useState("1m"); // today, 7d, 1m, 3m, 1y, all, custom
+  const [exportStartDate, setExportStartDate] = useState("");
+  const [exportEndDate, setExportEndDate] = useState("");
+  const [exportStatus, setExportStatus] = useState("ALL");
 
   // Filtered Users
   const filteredUsers = allUsers.filter((u) => {
@@ -305,7 +306,7 @@ export default function SuperAdminDashboard() {
   });
 
   // Filtered API Logs
-  const filteredApiLogs = apiLogs.filter((log: (typeof apiLogs)[number]) => {
+  const filteredApiLogs = apiLogs.filter((log) => {
     const query = apiSearch.toLowerCase();
     const matchesSearch =
       log.endpoint.toLowerCase().includes(query) ||
@@ -320,6 +321,11 @@ export default function SuperAdminDashboard() {
 
     return matchesSearch && matchesStatus && matchesMethod;
   });
+
+  // Build Download Link URL directed to resource route
+  const exportDownloadUrl = `/api/admin/export-logs?range=${exportRangePreset}${
+    exportRangePreset === "custom" && exportStartDate ? `&startDate=${exportStartDate}` : ""
+  }${exportRangePreset === "custom" && exportEndDate ? `&endDate=${exportEndDate}` : ""}&status=${exportStatus}`;
 
   return (
     <div className="flex-1 overflow-y-auto p-6 lg:p-10 w-full bg-slate-950 text-slate-100">
@@ -371,14 +377,14 @@ export default function SuperAdminDashboard() {
         )}
 
         {/* 2. Navigation Tabs */}
-        <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
+        <div className="p-1.5 bg-slate-900/80 border border-slate-800/90 rounded-2xl flex flex-wrap items-center gap-1.5 shadow-xl backdrop-blur-md">
           <button
             type="button"
             onClick={() => setActiveTab("OVERVIEW")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
               activeTab === "OVERVIEW"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
-                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800"
+                ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 text-white shadow-lg shadow-purple-600/30 border border-purple-400/30"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent"
             }`}
           >
             <span>📊</span>
@@ -388,15 +394,19 @@ export default function SuperAdminDashboard() {
           <button
             type="button"
             onClick={() => setActiveTab("API_LOGS")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
               activeTab === "API_LOGS"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
-                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800"
+                ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 text-white shadow-lg shadow-purple-600/30 border border-purple-400/30"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent"
             }`}
           >
             <span>📡</span>
             <span>Meta API Logs & Telemetry</span>
-            <span className="px-1.5 py-0.5 bg-blue-500/30 text-blue-300 text-[10px] font-bold rounded-full font-mono">
+            <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full font-mono ${
+              activeTab === "API_LOGS"
+                ? "bg-white/20 text-white"
+                : "bg-blue-500/20 text-blue-300"
+            }`}>
               {apiStats.totalApiCalls}
             </span>
           </button>
@@ -404,10 +414,10 @@ export default function SuperAdminDashboard() {
           <button
             type="button"
             onClick={() => setActiveTab("APPROVALS")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
               activeTab === "APPROVALS"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
-                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800"
+                ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 text-white shadow-lg shadow-purple-600/30 border border-purple-400/30"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent"
             }`}
           >
             <span>⏳</span>
@@ -422,10 +432,10 @@ export default function SuperAdminDashboard() {
           <button
             type="button"
             onClick={() => setActiveTab("STORES")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
               activeTab === "STORES"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
-                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800"
+                ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 text-white shadow-lg shadow-purple-600/30 border border-purple-400/30"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent"
             }`}
           >
             <span>🏬</span>
@@ -435,10 +445,10 @@ export default function SuperAdminDashboard() {
           <button
             type="button"
             onClick={() => setActiveTab("USERS")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
               activeTab === "USERS"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
-                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800"
+                ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 text-white shadow-lg shadow-purple-600/30 border border-purple-400/30"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent"
             }`}
           >
             <span>👥</span>
@@ -448,10 +458,10 @@ export default function SuperAdminDashboard() {
           <button
             type="button"
             onClick={() => setActiveTab("JOBS")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
               activeTab === "JOBS"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
-                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800"
+                ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 text-white shadow-lg shadow-purple-600/30 border border-purple-400/30"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent"
             }`}
           >
             <span>⚙️</span>
@@ -462,7 +472,7 @@ export default function SuperAdminDashboard() {
         {/* TAB 1: OVERVIEW & RATE LIMITS */}
         {activeTab === "OVERVIEW" && (
           <div className="space-y-6">
-            {/* Meta Application-Level Rate Limit Card (Matches Meta Dev Portal) */}
+            {/* Meta Application-Level Rate Limit Card */}
             <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-900 via-slate-900/90 to-slate-900/60 border border-slate-800 shadow-xl relative overflow-hidden">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-4">
@@ -532,7 +542,6 @@ export default function SuperAdminDashboard() {
                 </div>
               </div>
 
-              {/* Collapsible Details Explaining Meta's Application Rate Limiting */}
               {showRateLimitDetails && (
                 <div className="mt-4 p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs space-y-2">
                   <h4 className="font-bold text-white flex items-center gap-1.5">
@@ -660,7 +669,7 @@ export default function SuperAdminDashboard() {
         {/* TAB 2: META API LOGS & TELEMETRY */}
         {activeTab === "API_LOGS" && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5">
-            {/* Header & Metrics */}
+            {/* Header & Export Control */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-base font-bold text-white flex items-center gap-2">
@@ -670,21 +679,19 @@ export default function SuperAdminDashboard() {
                   </span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Complete timestamped audit trail of all outbound Meta API requests, latency, rate limit headers, and initiators.
+                  Permanent audit trail of all outbound Meta API requests, latency, rate limit headers, and initiators.
                 </p>
               </div>
 
               <div className="flex items-center gap-3">
-                <Form method="post" onSubmit={(e) => { if (!confirm("Clear all Meta API audit logs?")) e.preventDefault(); }}>
-                  <input type="hidden" name="intent" value="purge_api_logs" />
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-semibold transition"
-                  >
-                    🧹 Clear Audit Log
-                  </button>
-                </Form>
+                <button
+                  type="button"
+                  onClick={() => setShowExportModal(true)}
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-slate-950 font-bold rounded-xl text-xs transition shadow-lg shadow-emerald-500/20 flex items-center gap-2"
+                >
+                  <span>📊</span>
+                  <span>Export to Excel / CSV</span>
+                </button>
               </div>
             </div>
 
@@ -764,7 +771,7 @@ export default function SuperAdminDashboard() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                    {filteredApiLogs.map((log: (typeof apiLogs)[number]) => (
+                    {filteredApiLogs.map((log) => (
                       <tr key={log.id} className="hover:bg-slate-800/30 transition">
                         <td className="py-3 text-slate-400 whitespace-nowrap">
                           <div>{new Date(log.createdAt).toLocaleDateString()}</div>
@@ -922,6 +929,197 @@ export default function SuperAdminDashboard() {
                     >
                       Close Inspector
                     </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Export to Excel / CSV Modal with Date Ranges */}
+            {showExportModal && (
+              <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">📊</span>
+                      <div>
+                        <h3 className="font-extrabold text-white text-base">
+                          Export Meta API Audit Logs
+                        </h3>
+                        <p className="text-xs text-slate-400">
+                          Generate an Excel-compatible (.CSV) spreadsheet with complete audit parameters.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowExportModal(false)}
+                      className="text-slate-400 hover:text-white text-base"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Quick Preset Buttons */}
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-300">
+                      Quick Date Range Presets
+                    </label>
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setExportRangePreset("today")}
+                        className={`p-2.5 rounded-xl border text-center font-bold transition ${
+                          exportRangePreset === "today"
+                            ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20"
+                            : "bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ Today (24h)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setExportRangePreset("7d")}
+                        className={`p-2.5 rounded-xl border text-center font-bold transition ${
+                          exportRangePreset === "7d"
+                            ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20"
+                            : "bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ 7 Days
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setExportRangePreset("1m")}
+                        className={`p-2.5 rounded-xl border text-center font-bold transition ${
+                          exportRangePreset === "1m"
+                            ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20"
+                            : "bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ 1 Month (30d)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setExportRangePreset("3m")}
+                        className={`p-2.5 rounded-xl border text-center font-bold transition ${
+                          exportRangePreset === "3m"
+                            ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20"
+                            : "bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ 3 Months
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setExportRangePreset("1y")}
+                        className={`p-2.5 rounded-xl border text-center font-bold transition ${
+                          exportRangePreset === "1y"
+                            ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20"
+                            : "bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ 1 Year
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setExportRangePreset("all")}
+                        className={`p-2.5 rounded-xl border text-center font-bold transition ${
+                          exportRangePreset === "all"
+                            ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20"
+                            : "bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ All Time
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Custom Date Range Option */}
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-300">Custom Date Range</span>
+                      <button
+                        type="button"
+                        onClick={() => setExportRangePreset("custom")}
+                        className={`text-[11px] font-semibold underline ${
+                          exportRangePreset === "custom" ? "text-emerald-400" : "text-slate-400"
+                        }`}
+                      >
+                        Use Custom Dates
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">From Date</label>
+                        <input
+                          type="date"
+                          value={exportStartDate}
+                          onChange={(e) => {
+                            setExportStartDate(e.target.value);
+                            setExportRangePreset("custom");
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">To Date</label>
+                        <input
+                          type="date"
+                          value={exportEndDate}
+                          onChange={(e) => {
+                            setExportEndDate(e.target.value);
+                            setExportRangePreset("custom");
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Status Scope Filter */}
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1.5">
+                      Status Filter
+                    </label>
+                    <select
+                      value={exportStatus}
+                      onChange={(e) => setExportStatus(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="ALL">All Statuses (SUCCESS, RATE_LIMITED, FAILED)</option>
+                      <option value="SUCCESS">Only Successful Calls (200 OK)</option>
+                      <option value="RATE_LIMITED">Only Rate-Limited Calls (429)</option>
+                      <option value="FAILED">Only Failed Calls</option>
+                    </select>
+                  </div>
+
+                  {/* Modal Action Buttons */}
+                  <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowExportModal(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+
+                    <a
+                      href={exportDownloadUrl}
+                      download
+                      onClick={() => {
+                        setTimeout(() => setShowExportModal(false), 500);
+                      }}
+                      className="px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-extrabold rounded-xl text-xs transition flex items-center gap-2 shadow-lg shadow-emerald-500/25"
+                    >
+                      <span>📥</span>
+                      <span>Download Excel (.CSV)</span>
+                    </a>
                   </div>
                 </div>
               </div>
