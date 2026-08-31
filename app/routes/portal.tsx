@@ -22,6 +22,18 @@ export default function PortalLayout() {
     return <Outlet />;
   }
 
+  // If in Super Admin Portal, give full layout control to portal.admin.tsx
+  if (location.pathname.startsWith("/portal/admin")) {
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans relative selection:bg-emerald-500 selection:text-white">
+        {isNavigating && (
+          <div className="fixed top-0 left-0 right-0 z-50 h-[2px] bg-emerald-500 transition-all duration-200 pointer-events-none" />
+        )}
+        <Outlet />
+      </div>
+    );
+  }
+
   const isSuperAdmin = user.role === "SUPER_ADMIN";
   const isOwnerOrAdmin = user.role === "OWNER" || user.role === "MANAGER";
 
