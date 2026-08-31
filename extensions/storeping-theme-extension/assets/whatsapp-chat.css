@@ -65,25 +65,35 @@
   transform: scale(0.95) !important;
 }
 
-/* Soft, Elegant Expanding Pulse Wave Animation */
-.storeping-wa-btn.storeping-pulse::before {
+/* Smooth Border-Only Expanding Pulse Wave (No Static Border Ring) */
+.storeping-wa-btn.storeping-pulse::before,
+.storeping-wa-btn.storeping-pulse::after {
   content: "" !important;
   position: absolute !important;
-  inset: -1px !important;
+  inset: 0 !important;
   border-radius: 50% !important;
-  background-color: var(--storeping-bg-color, #25D366) !important;
-  opacity: 0.6 !important;
-  z-index: -1 !important;
-  animation: storeping-pulse-glow 2.2s infinite cubic-bezier(0.22, 1, 0.36, 1) !important;
+  border: 2px solid var(--storeping-bg-color, #25D366) !important;
+  background-color: transparent !important;
+  opacity: 0 !important; /* Zero fixed/static ring when idle */
   pointer-events: none !important;
+  box-sizing: border-box !important;
+  transform: scale(1) !important;
 }
 
-@keyframes storeping-pulse-glow {
+.storeping-wa-btn.storeping-pulse::before {
+  animation: storeping-border-pulse 2.2s cubic-bezier(0.2, 0.8, 0.4, 1) infinite !important;
+}
+
+.storeping-wa-btn.storeping-pulse::after {
+  animation: storeping-border-pulse 2.2s cubic-bezier(0.2, 0.8, 0.4, 1) 1.1s infinite !important;
+}
+
+@keyframes storeping-border-pulse {
   0% {
     transform: scale(1);
-    opacity: 0.65;
+    opacity: 0.8;
   }
-  55% {
+  65% {
     transform: scale(1.38);
     opacity: 0;
   }
