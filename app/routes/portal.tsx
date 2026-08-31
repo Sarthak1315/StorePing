@@ -23,46 +23,47 @@ export default function PortalLayout() {
   }
 
   const isSuperAdmin = user.role === "SUPER_ADMIN";
-  const isOwnerOrAdmin = user.role === "OWNER" || user.role === "MANAGER" || isSuperAdmin;
+  const isOwnerOrAdmin = user.role === "OWNER" || user.role === "MANAGER";
 
-  const navigation = [
-    ...(isSuperAdmin
-      ? [
-          {
-            name: "Platform Governance",
-            href: "/portal/admin",
-            icon: "👑",
-            badge: "Approvals",
-          },
-        ]
-      : []),
-    ...(isOwnerOrAdmin
-      ? [
-          {
-            name: "Store Operations",
-            href: "/portal/dashboard",
-            icon: "📊",
-            badge: null,
-          },
-        ]
-      : []),
-    {
-      name: "Live Support Inbox",
-      href: "/portal/inbox",
-      icon: "💬",
-      badge: "2-Way",
-    },
-    ...(isOwnerOrAdmin
-      ? [
-          {
-            name: "Team & Roles",
-            href: "/portal/team",
-            icon: "👥",
-            badge: user.role === "SUPER_ADMIN" ? "Admin" : user.role,
-          },
-        ]
-      : []),
-  ];
+  const navigation = isSuperAdmin
+    ? [
+        {
+          name: "Platform Governance",
+          href: "/portal/admin",
+          icon: "👑",
+          badge: "Control",
+        },
+        {
+          name: "Live Support Inbox",
+          href: "/portal/inbox",
+          icon: "💬",
+          badge: "2-Way",
+        },
+      ]
+    : [
+        {
+          name: "Store Operations",
+          href: "/portal/dashboard",
+          icon: "📊",
+          badge: null,
+        },
+        {
+          name: "Live Support Inbox",
+          href: "/portal/inbox",
+          icon: "💬",
+          badge: "2-Way",
+        },
+        ...(isOwnerOrAdmin
+          ? [
+              {
+                name: "Team & Roles",
+                href: "/portal/team",
+                icon: "👥",
+                badge: user.role,
+              },
+            ]
+          : []),
+      ];
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col md:flex-row font-sans selection:bg-emerald-500 selection:text-white relative">

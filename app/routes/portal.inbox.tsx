@@ -326,7 +326,7 @@ export default function PortalInbox() {
                       {c.unreadCount}
                     </span>
                   )}
-                </a>
+                </Link>
               );
             })
           )}
