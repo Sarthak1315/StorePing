@@ -35,7 +35,7 @@ async function seedSuperAdmin() {
       name: superAdminName,
       role: "SUPER_ADMIN",
       passwordHash: hashPassword(superAdminPassword),
-      merchantId: firstMerchant?.id || null,
+      merchant: firstMerchant ? { connect: { id: firstMerchant.id } } : undefined,
       isActive: true,
     },
   });
