@@ -738,7 +738,7 @@ export default function SuperAdminDashboard() {
                       </td>
                       <td className="py-3.5 text-right">
                         <Link
-                          to={`/portal/inbox?phone=`}
+                          to={`/portal/inbox`}
                           prefetch="intent"
                           className="px-3 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 font-semibold rounded-lg text-xs transition inline-flex items-center gap-1"
                         >
