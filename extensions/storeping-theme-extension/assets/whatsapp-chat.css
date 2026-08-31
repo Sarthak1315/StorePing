@@ -5,7 +5,7 @@
   z-index: 2147483647 !important;
   display: flex !important;
   align-items: center !important;
-  gap: 10px !important;
+  gap: 12px !important;
   text-decoration: none !important;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
   cursor: pointer !important;
@@ -14,30 +14,30 @@
   padding: 0 !important;
 }
 
-/* Bottom Right Position */
+/* Bottom Right Position: [ Text ] ( Button ) */
 .storeping-wa-float.storeping-pos-bottom-right,
 .storeping-wa-float.storeping-pos-right {
   right: 24px !important;
   left: auto !important;
   bottom: 24px !important;
   top: auto !important;
-  flex-direction: row-reverse !important;
+  flex-direction: row !important;
 }
 
-/* Bottom Left Position */
+/* Bottom Left Position: ( Button ) [ Text ] */
 .storeping-wa-float.storeping-pos-bottom-left,
 .storeping-wa-float.storeping-pos-left {
   left: 24px !important;
   right: auto !important;
   bottom: 24px !important;
   top: auto !important;
-  flex-direction: row !important;
+  flex-direction: row-reverse !important;
 }
 
-/* Circular WhatsApp Icon Button */
+/* Circular WhatsApp Icon Button with Schema-driven Size */
 .storeping-wa-btn {
-  width: 58px !important;
-  height: 58px !important;
+  width: var(--storeping-btn-size, 58px) !important;
+  height: var(--storeping-btn-size, 58px) !important;
   border-radius: 50% !important;
   background-color: var(--storeping-bg-color, #25D366) !important;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(37, 211, 102, 0.35) !important;
@@ -46,11 +46,12 @@
   justify-content: center !important;
   transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.25s ease !important;
   position: relative !important;
+  flex-shrink: 0 !important;
 }
 
 .storeping-wa-btn svg {
-  width: 32px !important;
-  height: 32px !important;
+  width: calc(var(--storeping-btn-size, 58px) * 0.55) !important;
+  height: calc(var(--storeping-btn-size, 58px) * 0.55) !important;
   fill: #ffffff !important;
   display: block !important;
 }
@@ -94,55 +95,49 @@
   }
 }
 
-/* Tooltip & Greeting Pill */
+/* Tooltip & Greeting Pill Badge with Schema-driven Text Size */
 .storeping-wa-tooltip {
   background-color: #1e293b !important;
   color: #ffffff !important;
-  padding: 8px 14px !important;
+  padding: 8px 16px !important;
   border-radius: 20px !important;
-  font-size: 13px !important;
+  font-size: var(--storeping-font-size, 13px) !important;
   font-weight: 600 !important;
   line-height: 1.3 !important;
   white-space: nowrap !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18) !important;
-  opacity: 0 !important;
-  transform: translateY(4px) !important;
-  transition: opacity 0.2s ease, transform 0.2s ease !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22) !important;
+  opacity: 1 !important;
+  transform: none !important;
   pointer-events: none !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  transition: transform 0.2s ease !important;
 }
 
 .storeping-wa-float:hover .storeping-wa-tooltip {
-  opacity: 1 !important;
-  transform: translateY(0) !important;
+  transform: translateY(-1px) !important;
 }
 
 /* Mobile Responsiveness */
 @media (max-width: 768px) {
   .storeping-wa-float {
     bottom: 20px !important;
+    gap: 8px !important;
   }
   .storeping-wa-float.storeping-pos-bottom-right,
   .storeping-wa-float.storeping-pos-right {
     right: 18px !important;
     left: auto !important;
     bottom: 20px !important;
+    flex-direction: row !important;
   }
   .storeping-wa-float.storeping-pos-bottom-left,
   .storeping-wa-float.storeping-pos-left {
     left: 18px !important;
     right: auto !important;
     bottom: 20px !important;
-  }
-  .storeping-wa-btn {
-    width: 54px !important;
-    height: 54px !important;
-  }
-  .storeping-wa-btn svg {
-    width: 29px !important;
-    height: 29px !important;
+    flex-direction: row-reverse !important;
   }
   .storeping-wa-tooltip {
-    display: none !important; /* Hide hover tooltip on mobile touch devices */
+    display: none !important; /* Clean circle button on mobile screens */
   }
 }

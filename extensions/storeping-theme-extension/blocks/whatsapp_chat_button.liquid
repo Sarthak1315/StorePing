@@ -18,9 +18,9 @@
   {% assign wa_url = 'https://wa.me/' | append: clean_phone | append: '?text=' | append: encoded_msg %}
 
   {% if block.settings.position == 'bottom-left' %}
-    {% assign pos_inline = 'left: 24px !important; right: auto !important; flex-direction: row !important;' %}
+    {% assign pos_inline = 'left: 24px !important; right: auto !important; flex-direction: row-reverse !important;' %}
   {% else %}
-    {% assign pos_inline = 'right: 24px !important; left: auto !important; flex-direction: row-reverse !important;' %}
+    {% assign pos_inline = 'right: 24px !important; left: auto !important; flex-direction: row !important;' %}
   {% endif %}
 
   <a
@@ -28,7 +28,12 @@
     target="_blank"
     rel="noopener noreferrer"
     class="storeping-wa-float storeping-pos-{{ block.settings.position | default: 'bottom-right' }}"
-    style="--storeping-bg-color: {{ block.settings.button_color | default: '#25D366' }}; {{ pos_inline }}"
+    style="
+      --storeping-bg-color: {{ block.settings.button_color | default: '#25D366' }};
+      --storeping-btn-size: {{ block.settings.button_size | default: 58 }}px;
+      --storeping-font-size: {{ block.settings.text_size | default: 13 }}px;
+      {{ pos_inline }}
+    "
     aria-label="Chat with Customer Support on WhatsApp"
   >
     {% if block.settings.tooltip_text != blank %}
@@ -73,10 +78,30 @@
       "default": "bottom-right"
     },
     {
+      "type": "range",
+      "id": "button_size",
+      "min": 44,
+      "max": 80,
+      "step": 2,
+      "unit": "px",
+      "label": "WhatsApp Button Size (Diameter)",
+      "default": 58
+    },
+    {
       "type": "text",
       "id": "tooltip_text",
-      "label": "Hover Tooltip Text",
+      "label": "Greeting Badge / Tooltip Text",
       "default": "Need help? Chat with Support"
+    },
+    {
+      "type": "range",
+      "id": "text_size",
+      "min": 11,
+      "max": 18,
+      "step": 1,
+      "unit": "px",
+      "label": "Greeting Text Font Size",
+      "default": 13
     },
     {
       "type": "textarea",
