@@ -90,6 +90,13 @@ export const action = async (args: ActionFunctionArgs) => {
         const customerName = data.customer?.first_name || data.shipping_address?.first_name || "there";
         const checkoutUrl = data.abandoned_checkout_url || `https://${shop}/checkout`;
 
+        // Calculate checkout recovery URL with fixed discount if applicable
+        const isFixedDiscount = merchant.cartRecoveryStrategy === "FIXED_CODE" && merchant.cartDiscountCode;
+        const baseCheckoutUrl = checkoutUrl;
+        const fixedDiscountCheckoutUrl = isFixedDiscount
+          ? `${baseCheckoutUrl}${baseCheckoutUrl.includes("?") ? "&" : "?"}discount=${encodeURIComponent(merchant.cartDiscountCode!)}`
+          : baseCheckoutUrl;
+
         // Record CartRecovery record
         await db.cartRecovery.upsert({
           where: { checkoutToken },
@@ -102,65 +109,76 @@ export const action = async (args: ActionFunctionArgs) => {
             cartTotal,
             currency: data.currency || merchant.currency,
             lineItems: lineItems as any,
-            checkoutUrl,
-            discountCode: merchant.cartDiscountCode || "SAVE10",
+            checkoutUrl: baseCheckoutUrl,
+            discountCode: isFixedDiscount ? merchant.cartDiscountCode : null,
             status: "PENDING",
           },
           update: {
             cartTotal,
             lineItems: lineItems as any,
-            checkoutUrl,
+            checkoutUrl: baseCheckoutUrl,
           },
         });
 
-        // Enqueue Step 1 (e.g. after cartDelay1 = 30 minutes)
-        await enqueueJob(
-          merchant.id,
-          "CART_RECOVERY",
-          {
-            recipientPhone: customerPhone,
-            customerName,
-            eventType: "CART_RECOVERY_1",
-            checkoutToken,
-            templateVariables: {
-              customer_name: customerName,
-              cart_items: cartItemsSummary || "Selected items",
-              total_amount: cartTotal.toFixed(2),
-              currency: data.currency || merchant.currency,
-              checkout_url: checkoutUrl,
-              store_name: merchant.name || shop.replace(".myshopify.com", ""),
-              discount_code: merchant.cartDiscountCode || "SAVE10",
+        // 1. Enqueue Step 1 (Gentle Reminder, e.g. after cartDelay1 = 30 minutes)
+        if (merchant.cartStep1Enabled !== false) {
+          await enqueueJob(
+            merchant.id,
+            "CART_RECOVERY",
+            {
+              recipientPhone: customerPhone,
+              customerName,
+              eventType: "CART_RECOVERY_1",
+              checkoutToken,
+              templateVariables: {
+                customer_name: customerName,
+                cart_items: cartItemsSummary || "Selected items",
+                total_amount: cartTotal.toFixed(2),
+                currency: data.currency || merchant.currency,
+                checkout_url: baseCheckoutUrl,
+                store_name: merchant.name || shop.replace(".myshopify.com", ""),
+                discount_code: "",
+              },
             },
-          },
-          merchant.cartDelay1
-        );
+            merchant.cartDelay1 || 30
+          );
+        }
 
-        // Enqueue Step 2 (e.g. after cartDelay2 = 360 minutes / 6 hours)
-        await enqueueJob(
-          merchant.id,
-          "CART_RECOVERY",
-          {
-            recipientPhone: customerPhone,
-            customerName,
-            eventType: "CART_RECOVERY_2",
-            checkoutToken,
-            templateVariables: {
-              customer_name: customerName,
-              cart_items: cartItemsSummary || "Selected items",
-              total_amount: cartTotal.toFixed(2),
-              currency: data.currency || merchant.currency,
-              checkout_url: checkoutUrl,
-              store_name: merchant.name || shop.replace(".myshopify.com", ""),
-              discount_code: merchant.cartDiscountCode || "SAVE10",
+        // 2. Enqueue Step 2 (Discount Follow-up, e.g. after cartDelay2 = 360 minutes / 6 hours)
+        // Only enqueued if strategy is NOT REMINDER_ONLY and Step 2 is enabled
+        const shouldEnqueueStep2 =
+          merchant.cartRecoveryStrategy !== "REMINDER_ONLY" && merchant.cartStep2Enabled !== false;
+
+        if (shouldEnqueueStep2) {
+          await enqueueJob(
+            merchant.id,
+            "CART_RECOVERY",
+            {
+              recipientPhone: customerPhone,
+              customerName,
+              eventType: "CART_RECOVERY_2",
+              checkoutToken,
+              templateVariables: {
+                customer_name: customerName,
+                cart_items: cartItemsSummary || "Selected items",
+                total_amount: cartTotal.toFixed(2),
+                currency: data.currency || merchant.currency,
+                checkout_url: fixedDiscountCheckoutUrl,
+                store_name: merchant.name || shop.replace(".myshopify.com", ""),
+                discount_code: isFixedDiscount ? merchant.cartDiscountCode || "SAVE10" : "10% OFF",
+              },
             },
-          },
-          merchant.cartDelay2
-        );
+            merchant.cartDelay2 || 360
+          );
+        }
 
-        await logInfo(`Scheduled abandoned cart recovery for checkout ${checkoutToken}`, {
-          shop,
-          source: "webhook",
-        });
+        await logInfo(
+          `Scheduled abandoned cart recovery for checkout ${checkoutToken} (Strategy: ${merchant.cartRecoveryStrategy}, Step 1: ${merchant.cartStep1Enabled !== false ? `${merchant.cartDelay1}m` : "OFF"}, Step 2: ${shouldEnqueueStep2 ? `${merchant.cartDelay2}m` : "OFF"})`,
+          {
+            shop,
+            source: "webhook",
+          }
+        );
         break;
       }
 

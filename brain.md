@@ -10,8 +10,12 @@
 - **Shopify Webhook Ingestion**: Real-time handling of `orders/create`, `orders/fulfilled`, `fulfillments/update`, `checkouts/create`, and `checkouts/update`.
 - **PostgreSQL Async Queue Engine**: Zero-cost queuing and delayed scheduling via `storeping_Job` and `storeping_CartRecovery` with automatic cancel-on-purchase logic.
 - **Custom Visual Template Designer**: Polaris-based template editor with dynamic variable pills (`{{customer_name}}`, `{{cart_items}}`, etc.) and a real-time live WhatsApp phone simulator.
+- **Bi-Directional Order & Address Confirmation**: Interactive WhatsApp 3-button message (`Confirm Address`, `Update Address`, `Ask Query`) syncing directly to Shopify Admin Order tags and timeline notes.
+- **Live 2-Way Support Inbox**: Real-time chat inbox with 24-hour Customer Service Window (CSW) tracking, media streaming proxy (`/api/meta/media`), and template fallbacks.
 - **Meta Limit & Payment Alert Monitoring**: Real-time 24h tier tracking, quality score monitoring, and automated high-visibility alert banners for payment or limit issues.
 - **DPDP Act 2023 & GDPR Compliance**: Purpose-specific consent records, 1-click JSON data export, and complete data erasure capabilities.
+
+> 📖 **Full Context & Architecture Guide**: See [PROJECT_CONTEXT.md](file:///f:/Shopify/App/StorePing/PROJECT_CONTEXT.md) for full-spectrum documentation.
 
 ---
 
@@ -28,12 +32,17 @@
 
 ```
 StorePing/
+├── PROJECT_CONTEXT.md                 # Complete Master Project Documentation
+├── PRICING_AND_COST_GUIDE.md          # Meta Pricing, Free Tier & ROI Guide
+├── RATE_LIMITING_AND_TIERS.md         # Meta API Limits & WABA Tier Scaling Guide
 ├── app/
 │   ├── db.server.ts                   # Prisma Singleton Client
 │   ├── shopify.server.ts              # Shopify API & Webhook Configuration
 │   ├── root.tsx                       # Remix HTML shell & Polaris Provider
 │   ├── routes/
 │   │   ├── app._index.tsx             # Overview Dashboard (KPIs, Alert Banners, Activity Feed)
+│   │   ├── app.orders.tsx             # Live Orders list, WhatsApp send modal, verification statuses
+│   │   ├── app.inbox.tsx              # 2-Way Live WhatsApp Support Inbox & CSW Manager
 │   │   ├── app.connect.tsx            # Facebook / Meta Portfolio 1-Click WhatsApp Onboarding
 │   │   ├── app.automations.tsx        # Event triggers & delay controls
 │   │   ├── app.templates.tsx          # Custom Visual Template Designer + Live Phone Simulator
@@ -42,7 +51,10 @@ StorePing/
 │   │   ├── app.settings.tsx           # Store Preferences & Live WhatsApp Test Sender
 │   │   ├── app.tsx                    # Embedded App Frame & Navigation
 │   │   ├── auth.$.tsx                 # Shopify OAuth routing fallback
-│   │   ├── api.meta.webhook.tsx       # Meta Webhook Ingestion & opt-out handler
+│   │   ├── auth.facebook.tsx          # Facebook OAuth Init Route
+│   │   ├── auth.facebook.callback.tsx # Facebook OAuth Callback & Token Exchange
+│   │   ├── api.meta.webhook.tsx       # Meta Webhook Ingestion, Quick Replies & Bot Handlers
+│   │   ├── api.meta.media.tsx         # Streaming Proxy for Meta WhatsApp Media (Photos/Audio/PDFs)
 │   │   ├── api.meta.data-deletion.tsx # Meta App Review Data Deletion Callback
 │   │   ├── cron.process-jobs.tsx      # PostgreSQL Queue worker runner
 │   │   └── webhooks.*.tsx             # Shopify & GDPR Webhook Listeners
@@ -51,7 +63,9 @@ StorePing/
 │       ├── dpdp.server.ts             # DPDP Consent, Export & Data Erasure Utilities
 │       ├── meta-whatsapp.server.ts    # Meta Graph API caller with appsecret_proof & limit handling
 │       ├── queue.server.ts            # PostgreSQL-backed job runner & scheduler
+│       ├── shopify-order.server.ts    # Shopify Admin GraphQL Client for Order Tags & Notes
 │       ├── template.server.ts         # Dynamic variable engine & default templates
+│       ├── template.shared.ts         # Shared Variable Interpolation Utilities
 │       ├── phone.utils.ts             # Phone number formatting (+91 E.164 sanitization & masking)
 │       └── logger.server.ts           # PII-safe application logging
 ├── prisma/

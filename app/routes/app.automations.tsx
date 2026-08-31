@@ -18,11 +18,16 @@ import {
   DataTable,
   Box,
   Tabs,
+  ChoiceList,
+  RangeSlider,
+  Tooltip,
+  Icon,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { logInfo } from "../utils/logger.server";
 import { cancelJobById, runJobImmediately, retryJobById } from "../utils/queue.server";
+import { fetchShopifyDiscounts, createShopifyBasicDiscount, type ShopifyDiscountOption } from "../utils/shopify-discount.server";
 
 export type AutomationActionData = {
   success?: boolean;
@@ -31,7 +36,7 @@ export type AutomationActionData = {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
 
   const merchant = await db.merchant.findUnique({
@@ -47,11 +52,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const jobs = merchant?.jobs || [];
   const pendingCount = jobs.filter((j) => j.status === "PENDING" || j.status === "PROCESSING").length;
 
-  return json({ merchant, jobs, pendingCount });
+  // Live query active discounts directly from Shopify Admin GraphQL API
+  const shopifyDiscounts = await fetchShopifyDiscounts(admin);
+
+  return json({ merchant, jobs, pendingCount, shopifyDiscounts });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
@@ -95,8 +103,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json<AutomationActionData>({ success: true, message: "All scheduled automation jobs have been stopped." });
   }
 
-  // 5. Save Automation Flow Toggles
+  // 5. Save Automation Flow Toggles & 3-Model Abandoned Cart Configuration
   const cartRecoveryEnabled = formData.get("cartRecoveryEnabled") === "true";
+  const cartRecoveryStrategy = (formData.get("cartRecoveryStrategy") as string) || "DYNAMIC_ONETIME";
+  const cartStep1Enabled = formData.get("cartStep1Enabled") === "true";
+  const cartStep2Enabled = formData.get("cartStep2Enabled") === "true";
+
+  const cartDelay1 = parseInt(formData.get("cartDelay1") as string) || 30;
+  const cartDelay2 = parseInt(formData.get("cartDelay2") as string) || 360;
+
+  const cartDiscountPrefix = (formData.get("cartDiscountPrefix") as string)?.trim().toUpperCase() || "CART";
+  const cartDiscountPercent = parseInt(formData.get("cartDiscountPercent") as string) || 10;
+  const cartDiscountExpiryHours = parseInt(formData.get("cartDiscountExpiryHours") as string) || 24;
+  const cartDiscountCode = (formData.get("cartDiscountCode") as string)?.trim() || "";
+
+  // Core Flow Toggles
   const orderConfirmEnabled = formData.get("orderConfirmEnabled") === "true";
   const orderShippedEnabled = formData.get("orderShippedEnabled") === "true";
   const orderDeliveredEnabled = formData.get("orderDeliveredEnabled") === "true";
@@ -105,14 +126,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const supportChatEnabled = formData.get("supportChatEnabled") === "true";
   const codVerificationEnabled = formData.get("codVerificationEnabled") === "true";
 
-  const cartDelay1 = parseInt(formData.get("cartDelay1") as string) || 30;
-  const cartDelay2 = parseInt(formData.get("cartDelay2") as string) || 360;
-  const cartDiscountCode = (formData.get("cartDiscountCode") as string) || "SAVE10";
+  // If user selected FIXED_CODE and typed a custom code, ensure it exists in Shopify Admin
+  const autoCreateShopifyDiscount = formData.get("autoCreateShopifyDiscount") === "true";
+  if (cartRecoveryStrategy === "FIXED_CODE" && cartDiscountCode && autoCreateShopifyDiscount) {
+    try {
+      await createShopifyBasicDiscount(admin, {
+        code: cartDiscountCode,
+        percentage: cartDiscountPercent || 10,
+        title: `StorePing Recovery Discount (${cartDiscountCode})`,
+      });
+    } catch (createErr: any) {
+      console.warn("Notice creating basic discount in Shopify Admin:", createErr);
+    }
+  }
 
   await db.merchant.update({
     where: { shop },
     data: {
       cartRecoveryEnabled,
+      cartRecoveryStrategy,
+      cartStep1Enabled,
+      cartStep2Enabled,
+      cartDelay1,
+      cartDelay2,
+      cartDiscountPrefix,
+      cartDiscountPercent,
+      cartDiscountExpiryHours,
+      cartDiscountCode,
       orderConfirmEnabled,
       orderShippedEnabled,
       orderDeliveredEnabled,
@@ -120,24 +160,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       reEngagementEnabled,
       supportChatEnabled,
       codVerificationEnabled,
-      cartDelay1,
-      cartDelay2,
-      cartDiscountCode,
     },
   });
 
-  await logInfo("Automations (7 flows) updated", { shop, source: "automations" });
+  await logInfo(`Automations updated (Strategy: ${cartRecoveryStrategy}, Step 1: ${cartDelay1}m, Step 2: ${cartDelay2}m)`, {
+    shop,
+    source: "automations",
+  });
 
-  return json<AutomationActionData>({ success: true, message: "Automation rules saved successfully." });
+  return json<AutomationActionData>({ success: true, message: "Automation rules & discount configuration saved successfully." });
 };
 
 export default function AutomationsPage() {
-  const { merchant, jobs, pendingCount } = useLoaderData<typeof loader>();
+  const { merchant, jobs, pendingCount, shopifyDiscounts } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<AutomationActionData>();
 
   const [selectedTab, setSelectedTab] = useState(0);
 
+  // Master & Strategy State
   const [cartRecovery, setCartRecovery] = useState(merchant?.cartRecoveryEnabled ?? true);
+  const [recoveryStrategy, setRecoveryStrategy] = useState<string>(merchant?.cartRecoveryStrategy || "DYNAMIC_ONETIME");
+
+  // Step Toggles
+  const [step1Active, setStep1Active] = useState(merchant?.cartStep1Enabled ?? true);
+  const [step2Active, setStep2Active] = useState(merchant?.cartStep2Enabled ?? true);
+
+  // Timing Delays
+  const [delay1, setDelay1] = useState(String(merchant?.cartDelay1 ?? 30));
+  const [delay2, setDelay2] = useState(String(merchant?.cartDelay2 ?? 360));
+
+  // Dynamic 1-Time Coupon Controls
+  const [discountPrefix, setDiscountPrefix] = useState(merchant?.cartDiscountPrefix || "CART");
+  const [discountPercent, setDiscountPercent] = useState(merchant?.cartDiscountPercent ?? 10);
+  const [discountExpiryHours, setDiscountExpiryHours] = useState(String(merchant?.cartDiscountExpiryHours ?? 24));
+
+  // Fixed Shopify Discount Controls
+  const [discountCode, setDiscountCode] = useState(merchant?.cartDiscountCode ?? "");
+  const [autoCreateInShopify, setAutoCreateInShopify] = useState(true);
+
+  // Other Core Flows State
   const [orderConfirm, setOrderConfirm] = useState(merchant?.orderConfirmEnabled ?? true);
   const [orderShipped, setOrderShipped] = useState(merchant?.orderShippedEnabled ?? true);
   const [orderDelivered, setOrderDelivered] = useState(merchant?.orderDeliveredEnabled ?? true);
@@ -146,13 +207,9 @@ export default function AutomationsPage() {
   const [supportChat, setSupportChat] = useState(merchant?.supportChatEnabled ?? true);
   const [codVerification, setCodVerification] = useState(merchant?.codVerificationEnabled ?? true);
 
-  const [delay1, setDelay1] = useState(String(merchant?.cartDelay1 ?? 30));
-  const [delay2, setDelay2] = useState(String(merchant?.cartDelay2 ?? 360));
-  const [discountCode, setDiscountCode] = useState(merchant?.cartDiscountCode ?? "SAVE10");
-
   const isSubmitting = fetcher.state !== "idle";
 
-  // Floating Toast Notification Handler (No top banners)
+  // Toast Notification Handler
   useEffect(() => {
     if (fetcher.data) {
       if (fetcher.data.message) {
@@ -175,6 +232,17 @@ export default function AutomationsPage() {
     const form = new FormData();
     form.append("intent", "saveAutomations");
     form.append("cartRecoveryEnabled", String(cartRecovery));
+    form.append("cartRecoveryStrategy", recoveryStrategy);
+    form.append("cartStep1Enabled", String(step1Active));
+    form.append("cartStep2Enabled", String(step2Active));
+    form.append("cartDelay1", delay1);
+    form.append("cartDelay2", delay2);
+    form.append("cartDiscountPrefix", discountPrefix);
+    form.append("cartDiscountPercent", String(discountPercent));
+    form.append("cartDiscountExpiryHours", discountExpiryHours);
+    form.append("cartDiscountCode", discountCode);
+    form.append("autoCreateShopifyDiscount", String(autoCreateInShopify));
+
     form.append("orderConfirmEnabled", String(orderConfirm));
     form.append("orderShippedEnabled", String(orderShipped));
     form.append("orderDeliveredEnabled", String(orderDelivered));
@@ -182,9 +250,7 @@ export default function AutomationsPage() {
     form.append("reEngagementEnabled", String(reEngagement));
     form.append("supportChatEnabled", String(supportChat));
     form.append("codVerificationEnabled", String(codVerification));
-    form.append("cartDelay1", delay1);
-    form.append("cartDelay2", delay2);
-    form.append("cartDiscountCode", discountCode);
+
     fetcher.submit(form, { method: "POST" });
   };
 
@@ -232,11 +298,9 @@ export default function AutomationsPage() {
       case "COD_CONFIRM":
         return "💳 COD Order Verification";
       case "CART_RECOVERY_1":
-        return "🛒 Cart Recovery (Step 1)";
+        return "🛒 Cart Recovery (Step 1 - Gentle Reminder)";
       case "CART_RECOVERY_2":
-        return "🛒 Cart Recovery (Step 2 - 10% Discount)";
-      case "CART_RECOVERY_3":
-        return "🛒 Cart Recovery (Step 3 - Final Urgency)";
+        return "🛒 Cart Recovery (Step 2 - Discount Offer)";
       case "ORDER_SHIPPED":
         return "🚚 Shipping & Tracking Alert";
       case "ORDER_DELIVERED":
@@ -247,8 +311,6 @@ export default function AutomationsPage() {
         return "✨ Customer Win-Back";
       case "SUPPORT_AUTO_REPLY":
         return "🤖 Support Auto-Reply";
-      case "ADDRESS_UPDATE_PROMPT":
-        return "✏️ Address Update Prompt";
       default:
         return eventType || "WhatsApp Dispatch";
     }
@@ -275,6 +337,9 @@ export default function AutomationsPage() {
     return `In ${diffMins} min (${runAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`;
   };
 
+  const cleanPrefix = (discountPrefix || "CART").trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "CART";
+  const dynamicPreviewCode = `${cleanPrefix}${discountPercent}-8X2F`;
+
   const jobRows = jobs.map((job: any) => {
     const payload = (job.payload || {}) as any;
     const eventType = payload.eventType || job.jobType;
@@ -282,7 +347,7 @@ export default function AutomationsPage() {
     const customerName = payload.customerName || "Customer";
 
     return [
-      <BlockStack gap="050">
+      <BlockStack gap="050" key={job.id}>
         <Text as="span" variant="bodySm" fontWeight="bold">
           {formatEventName(eventType)}
         </Text>
@@ -291,6 +356,7 @@ export default function AutomationsPage() {
         </Text>
       </BlockStack>,
       <Badge
+        key={`badge-${job.id}`}
         tone={
           job.status === "COMPLETED"
             ? "success"
@@ -305,13 +371,13 @@ export default function AutomationsPage() {
       >
         {job.status}
       </Badge>,
-      <Text as="span" variant="bodySm">
+      <Text key={`time-${job.id}`} as="span" variant="bodySm">
         {formatTiming(job)}
       </Text>,
-      <Text as="span" variant="bodyXs" tone="subdued">
+      <Text key={`attempts-${job.id}`} as="span" variant="bodyXs" tone="subdued">
         {job.attempts} / {job.maxAttempts}
       </Text>,
-      <InlineStack gap="150">
+      <InlineStack key={`actions-${job.id}`} gap="150">
         {job.status === "PENDING" && (
           <>
             <Button
@@ -328,7 +394,7 @@ export default function AutomationsPage() {
               onClick={() => handleCancelJob(job.id)}
               loading={isSubmitting}
             >
-              🛑 Stop / Cancel
+              🛑 Stop
             </Button>
           </>
         )}
@@ -359,7 +425,7 @@ export default function AutomationsPage() {
     <Page
       fullWidth
       title="Automations"
-      subtitle="Manage WhatsApp triggers, delivery schedules, and queued notifications."
+      subtitle="Manage WhatsApp triggers, delivery schedules, dynamic discounts, and queued notifications."
       primaryAction={{
         content: "Save Automations",
         onAction: handleSave,
@@ -382,18 +448,22 @@ export default function AutomationsPage() {
           <Box padding="400">
             {selectedTab === 0 ? (
               <Layout>
-                {/* 1. 🛒 Abandoned Cart Recovery */}
+                {/* 1. 🛒 Abandoned Cart Recovery Flow */}
                 <Layout.Section>
                   <Card>
                     <BlockStack gap="400">
                       <InlineStack align="space-between" blockAlign="center">
                         <BlockStack gap="100">
                           <InlineStack gap="200" blockAlign="center">
-                            <Text as="h3" variant="headingMd">🛒 1. Abandoned Cart Recovery Flow</Text>
-                            <Badge tone={cartRecovery ? "success" : undefined}>{cartRecovery ? "Active" : "Disabled"}</Badge>
+                            <Text as="h2" variant="headingMd">
+                              🛒 1. Abandoned Cart Recovery Flow
+                            </Text>
+                            <Badge tone={cartRecovery ? "success" : undefined}>
+                              {cartRecovery ? "Active" : "Disabled"}
+                            </Badge>
                           </InlineStack>
                           <Text as="p" tone="subdued">
-                            Sends automated multi-step reminders with direct 1-click checkout recovery links and dynamic coupons when shoppers leave items.
+                            Automatically recovers lost sales when shoppers abandon their cart or checkout via smart WhatsApp reminders and single-use self-destroying discounts.
                           </Text>
                         </BlockStack>
                         <Checkbox
@@ -406,38 +476,272 @@ export default function AutomationsPage() {
                       {cartRecovery && (
                         <>
                           <Divider />
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px" }}>
-                            <Select
-                              label="Step 1 Delay (Gentle Reminder)"
-                              options={[
-                                { label: "15 Minutes", value: "15" },
-                                { label: "30 Minutes (Recommended)", value: "30" },
-                                { label: "1 Hour", value: "60" },
-                              ]}
-                              value={delay1}
-                              onChange={(val) => setDelay1(val)}
-                            />
 
-                            <Select
-                              label="Step 2 Delay (Discount Urgency)"
-                              options={[
-                                { label: "3 Hours", value: "180" },
-                                { label: "6 Hours (Recommended)", value: "360" },
-                                { label: "12 Hours", value: "720" },
-                                { label: "24 Hours", value: "1440" },
-                              ]}
-                              value={delay2}
-                              onChange={(val) => setDelay2(val)}
-                            />
+                          {/* Strategy Selector (3 Models) */}
+                          <BlockStack gap="300">
+                            <Text as="h3" variant="headingSm">
+                              Choose Recovery Strategy & Model
+                            </Text>
 
-                            <TextField
-                              label="Discount Coupon Code"
-                              value={discountCode}
-                              onChange={(val) => setDiscountCode(val)}
-                              helpText="Automatically injected into checkout links"
-                              autoComplete="off"
+                            <ChoiceList
+                              title=""
+                              choices={[
+                                {
+                                  label: (
+                                    <BlockStack gap="050">
+                                      <InlineStack gap="150" blockAlign="center">
+                                        <Text as="span" fontWeight="bold">
+                                          ⚡ Model 1: Dynamic 1-Time Coupon (Self-Destroying)
+                                        </Text>
+                                        <Badge tone="success">Recommended</Badge>
+                                      </InlineStack>
+                                      <Text as="span" variant="bodySm" tone="subdued">
+                                        Sends a gentle reminder first (e.g. at 30 min), then generates a unique single-use code (e.g. {dynamicPreviewCode}) via Shopify GraphQL with <Text as="span" fontWeight="bold">usageLimit: 1</Text> and expiry. Auto-destroys after 1 use to prevent coupon leaks!
+                                      </Text>
+                                    </BlockStack>
+                                  ),
+                                  value: "DYNAMIC_ONETIME",
+                                },
+                                {
+                                  label: (
+                                    <BlockStack gap="050">
+                                      <InlineStack gap="150" blockAlign="center">
+                                        <Text as="span" fontWeight="bold">
+                                          🛡️ Model 2: Gentle Reminder Only (No Discount)
+                                        </Text>
+                                        <Badge tone="info">No Margin Loss</Badge>
+                                      </InlineStack>
+                                      <Text as="span" variant="bodySm" tone="subdued">
+                                        Ideal for brands that do not want to discount products. Sends only a gentle WhatsApp reminder with cart items and 1-click checkout recovery link after 30 minutes (or custom delay). No follow-up discount is sent.
+                                      </Text>
+                                    </BlockStack>
+                                  ),
+                                  value: "REMINDER_ONLY",
+                                },
+                                {
+                                  label: (
+                                    <BlockStack gap="050">
+                                      <InlineStack gap="150" blockAlign="center">
+                                        <Text as="span" fontWeight="bold">
+                                          🏷️ Model 3: Fixed Store-Wide Shopify Discount Code
+                                        </Text>
+                                      </InlineStack>
+                                      <Text as="span" variant="bodySm" tone="subdued">
+                                        Select from your existing live Shopify Admin discounts (e.g. SAVE10) or type a custom store code that auto-creates and syncs directly to Shopify Admin Discounts.
+                                      </Text>
+                                    </BlockStack>
+                                  ),
+                                  value: "FIXED_CODE",
+                                },
+                              ]}
+                              selected={[recoveryStrategy]}
+                              onChange={(val) => setRecoveryStrategy(val[0])}
                             />
-                          </div>
+                          </BlockStack>
+
+                          {/* Dynamic 1-Time Coupon Settings (Model 1) */}
+                          {recoveryStrategy === "DYNAMIC_ONETIME" && (
+                            <Box
+                              padding="400"
+                              background="bg-surface-secondary"
+                              borderRadius="200"
+                              borderWidth="025"
+                              borderColor="border"
+                            >
+                              <BlockStack gap="300">
+                                <InlineStack align="space-between" blockAlign="center">
+                                  <Text as="h4" variant="headingSm">
+                                    ⚡ Dynamic Single-Use Coupon Configuration
+                                  </Text>
+                                  <Badge tone="success">Auto-Created in Shopify on Dispatch</Badge>
+                                </InlineStack>
+
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px" }}>
+                                  <TextField
+                                    label="Code Prefix / Pattern"
+                                    value={discountPrefix}
+                                    onChange={(val) => setDiscountPrefix(val.toUpperCase())}
+                                    helpText="Example: CART, VIP, FLASH, SAVE"
+                                    autoComplete="off"
+                                  />
+
+                                  <Select
+                                    label="Discount Percentage"
+                                    options={[
+                                      { label: "5% Off", value: "5" },
+                                      { label: "10% Off (Standard)", value: "10" },
+                                      { label: "15% Off (High Conversion)", value: "15" },
+                                      { label: "20% Off (Aggressive)", value: "20" },
+                                      { label: "25% Off", value: "25" },
+                                    ]}
+                                    value={String(discountPercent)}
+                                    onChange={(val) => setDiscountPercent(parseInt(val))}
+                                  />
+
+                                  <Select
+                                    label="Coupon Expiration Timer"
+                                    options={[
+                                      { label: "6 Hours (Fast Urgency)", value: "6" },
+                                      { label: "12 Hours", value: "12" },
+                                      { label: "24 Hours (Recommended)", value: "24" },
+                                      { label: "48 Hours", value: "48" },
+                                    ]}
+                                    value={discountExpiryHours}
+                                    onChange={(val) => setDiscountExpiryHours(val)}
+                                    helpText="Shopify automatically expires the code after this period"
+                                  />
+                                </div>
+
+                                <Box padding="200" background="bg-surface-brand-active" borderRadius="150">
+                                  <InlineStack align="space-between" blockAlign="center">
+                                    <Text as="span" variant="bodySm">
+                                      🎫 Live Code Generated for Customer: <Text as="span" fontWeight="bold">{dynamicPreviewCode}</Text>
+                                    </Text>
+                                    <Text as="span" variant="bodyXs" tone="subdued">
+                                      Limits: 1 Total Use • Expires in {discountExpiryHours}h • Auto-Applied at Checkout
+                                    </Text>
+                                  </InlineStack>
+                                </Box>
+                              </BlockStack>
+                            </Box>
+                          )}
+
+                          {/* Fixed Store Discount Settings (Model 3) */}
+                          {recoveryStrategy === "FIXED_CODE" && (
+                            <Box
+                              padding="400"
+                              background="bg-surface-secondary"
+                              borderRadius="200"
+                              borderWidth="025"
+                              borderColor="border"
+                            >
+                              <BlockStack gap="300">
+                                <InlineStack align="space-between" blockAlign="center">
+                                  <Text as="h4" variant="headingSm">
+                                    🏷️ Shopify Admin Discount Selector & Sync
+                                  </Text>
+                                  <Badge tone="info">{`${shopifyDiscounts.length} Live Shopify Discounts Found`}</Badge>
+                                </InlineStack>
+
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                                  {shopifyDiscounts.length > 0 && (
+                                    <Select
+                                      label="Select from Shopify Admin Discounts"
+                                      options={[
+                                        { label: "-- Select an existing Shopify discount --", value: "" },
+                                        ...shopifyDiscounts.map((d) => ({
+                                          label: `${d.code} (${d.summary}) - ${d.title}`,
+                                          value: d.code,
+                                        })),
+                                      ]}
+                                      value={discountCode}
+                                      onChange={(val) => {
+                                        if (val) setDiscountCode(val);
+                                      }}
+                                    />
+                                  )}
+
+                                  <TextField
+                                    label="Or Enter Custom Discount Code"
+                                    value={discountCode}
+                                    onChange={(val) => setDiscountCode(val.toUpperCase())}
+                                    helpText="Example: SAVE10 or FLAT50"
+                                    autoComplete="off"
+                                  />
+                                </div>
+
+                                <Checkbox
+                                  label="Automatically create & sync this discount in Shopify Admin if it doesn't already exist"
+                                  checked={autoCreateInShopify}
+                                  onChange={(val) => setAutoCreateInShopify(val)}
+                                />
+                              </BlockStack>
+                            </Box>
+                          )}
+
+                          <Divider />
+
+                          {/* Delivery Schedule & Timings */}
+                          <BlockStack gap="300">
+                            <Text as="h3" variant="headingSm">
+                              Delivery Timers & Multi-Step Sequence
+                            </Text>
+
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                              {/* Step 1: Gentle Reminder */}
+                              <Card>
+                                <BlockStack gap="300">
+                                  <InlineStack align="space-between" blockAlign="center">
+                                    <BlockStack gap="050">
+                                      <Text as="h4" variant="headingSm">
+                                        Step 1: Gentle Reminder
+                                      </Text>
+                                      <Text as="p" variant="bodyXs" tone="subdued">
+                                        Sends cart preview & items without pressure
+                                      </Text>
+                                    </BlockStack>
+                                    <Checkbox
+                                      label=""
+                                      checked={step1Active}
+                                      onChange={(val) => setStep1Active(val)}
+                                    />
+                                  </InlineStack>
+
+                                  <Select
+                                    label="Send Delay"
+                                    disabled={!step1Active}
+                                    options={[
+                                      { label: "15 Minutes (Fast Action)", value: "15" },
+                                      { label: "30 Minutes (Recommended by Shopify)", value: "30" },
+                                      { label: "45 Minutes", value: "45" },
+                                      { label: "1 Hour", value: "60" },
+                                      { label: "2 Hours", value: "120" },
+                                    ]}
+                                    value={delay1}
+                                    onChange={(val) => setDelay1(val)}
+                                  />
+                                </BlockStack>
+                              </Card>
+
+                              {/* Step 2: Follow-up & Discount */}
+                              <Card>
+                                <BlockStack gap="300">
+                                  <InlineStack align="space-between" blockAlign="center">
+                                    <BlockStack gap="050">
+                                      <Text as="h4" variant="headingSm">
+                                        Step 2: Discount & Urgency Follow-up
+                                      </Text>
+                                      <Text as="p" variant="bodyXs" tone="subdued">
+                                        {recoveryStrategy === "REMINDER_ONLY"
+                                          ? "Disabled (Reminder Only Strategy)"
+                                          : "Sends discount coupon code & urgency timer"}
+                                      </Text>
+                                    </BlockStack>
+                                    <Checkbox
+                                      label=""
+                                      disabled={recoveryStrategy === "REMINDER_ONLY"}
+                                      checked={recoveryStrategy !== "REMINDER_ONLY" && step2Active}
+                                      onChange={(val) => setStep2Active(val)}
+                                    />
+                                  </InlineStack>
+
+                                  <Select
+                                    label="Send Delay"
+                                    disabled={recoveryStrategy === "REMINDER_ONLY" || !step2Active}
+                                    options={[
+                                      { label: "2 Hours", value: "120" },
+                                      { label: "4 Hours", value: "240" },
+                                      { label: "6 Hours (Recommended)", value: "360" },
+                                      { label: "12 Hours", value: "720" },
+                                      { label: "24 Hours", value: "1440" },
+                                    ]}
+                                    value={delay2}
+                                    onChange={(val) => setDelay2(val)}
+                                  />
+                                </BlockStack>
+                              </Card>
+                            </div>
+                          </BlockStack>
                         </>
                       )}
                     </BlockStack>

@@ -1,6 +1,8 @@
 import db from "../db.server";
+import { unauthenticated } from "../shopify.server";
 import { sendWhatsAppMessage } from "./meta-whatsapp.server";
 import { interpolateVariables, seedDefaultTemplates } from "./template.server";
+import { createDynamicOneTimeDiscount } from "./shopify-discount.server";
 import { logInfo, logWarn, logError } from "./logger.server";
 
 export interface JobPayload {
@@ -137,6 +139,45 @@ export async function processPendingJobs(limit = 20) {
           data: { status: "CANCELLED" },
         });
         continue;
+      }
+    }
+
+    // If this is a CART_RECOVERY_2 job and merchant uses dynamic single-use coupons, generate the code in Shopify
+    if (
+      payload.eventType === "CART_RECOVERY_2" &&
+      merchant.cartRecoveryStrategy === "DYNAMIC_ONETIME"
+    ) {
+      try {
+        const { admin } = await unauthenticated.admin(merchant.shop);
+        if (admin) {
+          const dynamicResult = await createDynamicOneTimeDiscount(admin, {
+            prefix: merchant.cartDiscountPrefix || "CART",
+            percent: merchant.cartDiscountPercent || 10,
+            expiryHours: merchant.cartDiscountExpiryHours || 24,
+            checkoutToken: payload.checkoutToken,
+          });
+
+          if (dynamicResult.success && dynamicResult.code) {
+            payload.templateVariables.discount_code = dynamicResult.code;
+
+            // Append discount to checkout URL
+            const rawUrl = payload.templateVariables.checkout_url || `https://${merchant.shop}/checkout`;
+            const cleanUrl = rawUrl.replace(/([?&])discount=[^&]*/g, "").replace(/[?&]$/, "");
+            payload.templateVariables.checkout_url = `${cleanUrl}${cleanUrl.includes("?") ? "&" : "?"}discount=${encodeURIComponent(dynamicResult.code)}`;
+
+            // Update CartRecovery tracking record
+            if (payload.checkoutToken) {
+              await db.cartRecovery.updateMany({
+                where: { merchantId: merchant.id, checkoutToken: payload.checkoutToken },
+                data: { discountCode: dynamicResult.code },
+              });
+            }
+          }
+        }
+      } catch (discErr: any) {
+        await logWarn(`Failed to generate dynamic discount for ${job.id}: ${discErr.message}`, {
+          source: "queue",
+        });
       }
     }
 

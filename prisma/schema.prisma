@@ -62,20 +62,26 @@ model Merchant {
   alertMessage           String?   @db.Text
   
   // Automation Toggles (7 Core Flows)
-  cartRecoveryEnabled    Boolean   @default(true)
-  orderConfirmEnabled    Boolean   @default(true)
-  orderShippedEnabled    Boolean   @default(true)
-  orderDeliveredEnabled  Boolean   @default(true)
-  promotionsEnabled      Boolean   @default(true)
-  reEngagementEnabled    Boolean   @default(true)
-  codVerificationEnabled Boolean   @default(true)
-  supportChatEnabled     Boolean   @default(true)
+  cartRecoveryEnabled      Boolean   @default(true)
+  cartRecoveryStrategy     String    @default("DYNAMIC_ONETIME") // REMINDER_ONLY, DYNAMIC_ONETIME, FIXED_CODE
+  cartStep1Enabled         Boolean   @default(true)
+  cartStep2Enabled         Boolean   @default(true)
+  orderConfirmEnabled      Boolean   @default(true)
+  orderShippedEnabled      Boolean   @default(true)
+  orderDeliveredEnabled    Boolean   @default(true)
+  promotionsEnabled        Boolean   @default(true)
+  reEngagementEnabled      Boolean   @default(true)
+  codVerificationEnabled   Boolean   @default(true)
+  supportChatEnabled       Boolean   @default(true)
   
-  // Cart Recovery Delays (in minutes)
-  cartDelay1             Int       @default(30)   // 30 min
-  cartDelay2             Int       @default(360)  // 6 hours
-  cartDelay3             Int       @default(1440) // 24 hours
-  cartDiscountCode       String?
+  // Cart Recovery Delays (in minutes) & Dynamic Coupon Settings
+  cartDelay1               Int       @default(30)   // 30 min (Gentle Reminder)
+  cartDelay2               Int       @default(360)  // 6 hours (Discount Follow-up)
+  cartDelay3               Int       @default(1440) // 24 hours
+  cartDiscountPrefix       String?   @default("CART") // Custom prefix / pattern: "CART", "VIP", "SAVE"
+  cartDiscountPercent      Int       @default(10)   // Discount percentage (e.g. 10%)
+  cartDiscountExpiryHours  Int       @default(24)   // Coupon expiry in hours (e.g. 24 hours)
+  cartDiscountCode         String?   // For FIXED_CODE model (e.g. "SAVE10")
   
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
