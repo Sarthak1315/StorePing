@@ -92,6 +92,8 @@ model Merchant {
   cartRecoveries         CartRecovery[]
   conversations          Conversation[]
   orderConfirmations     OrderConfirmation[]
+  users                  User[]
+  invitations            TeamInvitation[]
 
   @@map("storeping_Merchant")
 }
@@ -295,4 +297,44 @@ model Log {
   @@index([level])
   @@index([createdAt])
   @@map("storeping_Log")
+}
+
+// 10. Organization Team Members & RBAC User Accounts
+model User {
+  id             String    @id @default(uuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  email          String    @unique
+  passwordHash   String
+  name           String
+  role           String    @default("AGENT") // OWNER, MANAGER, AGENT
+  avatarUrl      String?
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([merchantId])
+  @@index([email])
+  @@map("storeping_User")
+}
+
+// 11. Team Invitation Token Registry
+model TeamInvitation {
+  id             String    @id @default(uuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  email          String
+  role           String    @default("AGENT") // MANAGER, AGENT
+  token          String    @unique
+  expiresAt      DateTime
+  status         String    @default("PENDING") // PENDING, ACCEPTED, REVOKED
+  
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([merchantId])
+  @@index([token])
+  @@map("storeping_TeamInvitation")
 }

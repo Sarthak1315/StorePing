@@ -49,14 +49,13 @@ export default function LandingAndLoginPage() {
           </div>
 
           <div className="flex items-center gap-4">
-            <a
-              href="https://shopify.dev/docs/apps"
-              target="_blank"
-              rel="noreferrer"
-              className="text-sm text-slate-300 hover:text-white transition hidden sm:inline"
+            <Link
+              to="/portal/login"
+              className="text-sm font-semibold text-emerald-400 hover:text-emerald-300 transition px-3 py-1.5 rounded-lg border border-emerald-500/30 hover:bg-emerald-500/10 flex items-center gap-1.5"
             >
-              Shopify App Guide
-            </a>
+              <span>🔑</span>
+              <span>Portal & Inbox Login</span>
+            </Link>
             <a
               href="#install"
               className="text-sm font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-lg transition shadow-md shadow-emerald-500/20"
