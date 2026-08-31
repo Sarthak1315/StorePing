@@ -304,7 +304,7 @@ export async function action({ request }: ActionFunctionArgs) {
         headerType: template?.headerType || "TEXT",
         headerText: headerText || undefined,
         headerMediaUrl: template?.headerMediaUrl || undefined,
-        footerText: template?.footerText || `${merchant.name || shop} • 1-Click Verification`,
+        footerText: template?.footerText ? interpolateVariables(template.footerText, templateVariables) : `${merchant.name || shop} • 1-Click Verification`,
         buttonType,
         buttonText,
         buttonUrl,

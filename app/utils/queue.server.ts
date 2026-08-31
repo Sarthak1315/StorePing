@@ -201,6 +201,7 @@ export async function processPendingJobs(limit = 20) {
     // Interpolate dynamic template text
     const interpolatedBody = interpolateVariables(template.bodyText, payload.templateVariables);
     const interpolatedHeader = interpolateVariables(template.headerText, payload.templateVariables);
+    const interpolatedFooter = interpolateVariables(template.footerText, payload.templateVariables);
     const interpolatedButtonUrl = interpolateVariables(template.buttonUrl, payload.templateVariables);
 
     // Format buttons with order ID if applicable
@@ -231,7 +232,7 @@ export async function processPendingJobs(limit = 20) {
       headerType: template.headerType,
       headerText: interpolatedHeader,
       headerMediaUrl: template.headerMediaUrl,
-      footerText: template.footerText,
+      footerText: interpolatedFooter,
       buttonType: template.buttonType,
       buttonText: template.buttonText,
       buttonUrl: interpolatedButtonUrl,

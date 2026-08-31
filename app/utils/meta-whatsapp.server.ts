@@ -500,7 +500,17 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       },
     };
   } else {
-    // Non-template Freeform text (100% Free inside Customer Service Window!)
+    // Non-template Freeform text message: Combine bold header and italic footer if present
+    let formattedText = (bodyText || "Hello from StorePing!").trim();
+
+    if (headerType === "TEXT" && headerText && headerText.trim()) {
+      formattedText = `*${headerText.trim()}*\n\n${formattedText}`;
+    }
+
+    if (footerText && footerText.trim()) {
+      formattedText = `${formattedText}\n\n_${footerText.trim()}_`;
+    }
+
     payload = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
@@ -508,7 +518,7 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       type: "text",
       text: {
         preview_url: true,
-        body: bodyText || "Hello from StorePing!",
+        body: formattedText,
       },
     };
   }

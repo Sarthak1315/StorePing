@@ -259,7 +259,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         headerType: template.headerType,
         headerText: interpolatedHeader,
         headerMediaUrl: template.headerMediaUrl,
-        footerText: template.footerText,
+        footerText: template.footerText ? interpolateVariables(template.footerText, templateVariables) : undefined,
         buttonType: template.buttonType,
         buttonText: template.buttonText,
         buttonUrl: template.buttonUrl,
