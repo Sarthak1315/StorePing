@@ -4,6 +4,8 @@ import { Form, Link, useActionData, useLoaderData, useNavigation } from "@remix-
 import { useState } from "react";
 import db from "../db.server";
 import { requireRole } from "../utils/portal-auth.server";
+import { getPlatformSettings, updatePlatformSettings } from "../utils/platform-settings.server";
+import { getGlobalPlatformBillingSummary } from "../utils/meta-pricing.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   // Only SUPER_ADMIN allowed
@@ -12,7 +14,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-  // Run all global platform telemetry and API audit queries in parallel
+  // Run all global platform telemetry, billing summaries, and audit queries in parallel
   const [
     pendingUsers,
     allStores,
@@ -28,6 +30,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
     apiCalls24h,
     rateLimitedCalls,
     failedApiCalls,
+    latestRateLimitLog,
+    callsPerMerchant1h,
+    platformSettings,
+    platformBilling,
   ] = await Promise.all([
     db.user.findMany({
       where: { approvalStatus: "PENDING" },
@@ -98,23 +104,91 @@ export async function loader({ request }: LoaderFunctionArgs) {
     db.metaApiLog.count({
       where: { status: "FAILED" },
     }),
+    db.metaApiLog.findFirst({
+      where: { rateLimitUsage: { not: null } },
+      orderBy: { createdAt: "desc" },
+    }),
+    db.metaApiLog.groupBy({
+      by: ["merchantId"],
+      where: {
+        createdAt: { gte: oneHourAgo },
+        merchantId: { not: null },
+      },
+      _count: true,
+    }),
+    getPlatformSettings(),
+    getGlobalPlatformBillingSummary(),
   ]);
 
   const activeWabas = allStores.filter((s) => s.isWhatsAppConnected).length;
-  const activeUsersCount = allUsers.filter((u) => u.isActive).length || 1;
+  const connectedNumbersCount = allStores.filter((s) => s.displayPhoneNumber).length || 1;
 
-  // Official Meta Application-Level Rate Limit Formula:
-  // Total hourly calls allowed across the app = 200 * number of users
-  const maxHourlyAppLimit = activeUsersCount * 200;
-  const rateLimitUsedPercent = Math.min(
-    100,
-    Math.round((callsInLastHour / maxHourlyAppLimit) * 100)
-  );
+  // Map 1-hour calls per merchant
+  const merchantHourlyCallMap = new Map<string, number>();
+  for (const group of callsPerMerchant1h) {
+    if (group.merchantId) {
+      merchantHourlyCallMap.set(group.merchantId, group._count);
+    }
+  }
+
+  // Official Meta WhatsApp Business Management & Cloud API Rate Limit Formula:
+  // Quota = 5,000 requests per hour, per active WABA / Phone Number
+  const perWabaHourlyLimit = 5000;
+  const totalPlatformWabaLimit = Math.max(1, activeWabas) * perWabaHourlyLimit;
+
+  // Parse Meta Live Header Telemetry if present in DB
+  let liveHeaderTelemetry = null;
+  if (latestRateLimitLog?.rateLimitUsage) {
+    try {
+      const parsed = JSON.parse(latestRateLimitLog.rateLimitUsage);
+      if (typeof parsed === "object") {
+        const firstKey = Object.keys(parsed)[0];
+        const item = Array.isArray(parsed[firstKey]) ? parsed[firstKey][0] : parsed;
+        liveHeaderTelemetry = {
+          callCountPct: item?.call_count ?? null,
+          totalCpuTimePct: item?.total_cputime ?? null,
+          totalTimePct: item?.total_time ?? null,
+          estimatedTimeToRegainAccess: item?.estimated_time_to_regain_access ?? 0,
+          rawHeader: latestRateLimitLog.rateLimitUsage,
+        };
+      }
+    } catch {
+      // ignore parse error
+    }
+  }
+
+  const rateLimitUsedPercent =
+    liveHeaderTelemetry?.callCountPct !== null && liveHeaderTelemetry?.callCountPct !== undefined
+      ? Math.min(100, Math.round(Number(liveHeaderTelemetry.callCountPct)))
+      : Math.min(100, Math.round((callsInLastHour / totalPlatformWabaLimit) * 100));
+
   const rateLimitRemainingPercent = Math.max(0, 100 - rateLimitUsedPercent);
 
   // Success rate calculation
   const successCount = totalApiCalls - failedApiCalls;
   const apiSuccessRate = totalApiCalls > 0 ? Math.round((successCount / totalApiCalls) * 100) : 100;
+
+  // Store-level WABA rate limit & 24h tier breakdown
+  const storeWabaBreakdown = allStores.map((store) => {
+    const calls60m = merchantHourlyCallMap.get(store.id) || 0;
+    const storeLimit = store.isWhatsAppConnected ? perWabaHourlyLimit : 200;
+    const storeUsagePercent = Math.min(100, Math.round((calls60m / storeLimit) * 100));
+
+    return {
+      id: store.id,
+      shop: store.shop,
+      name: store.name,
+      displayPhoneNumber: store.displayPhoneNumber,
+      wabaId: store.wabaId,
+      isWhatsAppConnected: store.isWhatsAppConnected,
+      qualityRating: store.qualityRating || "GREEN",
+      messagingLimitTier: store.messagingLimit || "TIER_250",
+      dailySentCount: store.dailySentCount,
+      calls60m,
+      hourlyLimit: storeLimit,
+      usagePercent: storeUsagePercent,
+    };
+  });
 
   return json({
     user,
@@ -123,6 +197,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     allUsers,
     recentJobs,
     apiLogs,
+    platformSettings,
+    platformBilling,
     apiStats: {
       totalApiCalls,
       apiCalls24h,
@@ -133,12 +209,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
     rateLimitStats: {
       appId: "1083822394035933",
       appName: "StorePing",
-      activeUsersCount,
-      maxHourlyAppLimit,
+      activeWabas,
+      connectedNumbersCount,
+      perWabaHourlyLimit,
+      totalPlatformWabaLimit,
       callsInLastHour,
       rateLimitUsedPercent,
       rateLimitRemainingPercent,
+      liveHeaderTelemetry,
     },
+    storeWabaBreakdown,
     stats: {
       totalStores: allStores.length,
       activeWabas,
@@ -159,7 +239,27 @@ export async function action({ request }: ActionFunctionArgs) {
   const targetUserId = formData.get("userId") as string;
   const jobId = formData.get("jobId") as string;
 
-  // 1. Approve User Registration Request
+  // 1. Update Global Platform Support Settings
+  if (intent === "update_platform_settings") {
+    const supportEmail = (formData.get("supportEmail") as string) || "";
+    const supportPhone = (formData.get("supportPhone") as string) || "";
+    const supportWhatsApp = (formData.get("supportWhatsApp") as string) || "";
+    const supportHours = (formData.get("supportHours") as string) || "";
+
+    await updatePlatformSettings({
+      supportEmail,
+      supportPhone,
+      supportWhatsApp,
+      supportHours,
+    });
+
+    return json({
+      success: "Everon Labs platform support settings updated successfully.",
+      error: null as string | null,
+    });
+  }
+
+  // 2. Approve User Registration Request
   if (intent === "approve_user") {
     const updated = await db.user.update({
       where: { id: targetUserId },
@@ -174,7 +274,7 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   }
 
-  // 2. Reject User Registration Request
+  // 3. Reject User Registration Request
   if (intent === "reject_user") {
     const updated = await db.user.update({
       where: { id: targetUserId },
@@ -189,7 +289,7 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   }
 
-  // 3. Toggle User Active/Inactive
+  // 4. Toggle User Active/Inactive
   if (intent === "toggle_user_status") {
     const currentStatus = formData.get("currentStatus") === "true";
     if (targetUserId === user.id) {
@@ -202,7 +302,7 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ success: "User status updated.", error: null as string | null });
   }
 
-  // 4. Delete User Account
+  // 5. Delete User Account
   if (intent === "delete_user") {
     if (targetUserId === user.id) {
       return json({ success: null as string | null, error: "Cannot delete Super Admin account." }, { status: 400 });
@@ -211,7 +311,7 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ success: "User account deleted.", error: null as string | null });
   }
 
-  // 5. Retry Background Job
+  // 6. Retry Background Job
   if (intent === "retry_job" && jobId) {
     await db.job.update({
       where: { id: jobId },
@@ -225,13 +325,13 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ success: "Job reset to PENDING for immediate retry.", error: null as string | null });
   }
 
-  // 6. Delete Background Job
+  // 7. Delete Background Job
   if (intent === "delete_job" && jobId) {
     await db.job.delete({ where: { id: jobId } });
     return json({ success: "Job removed from queue.", error: null as string | null });
   }
 
-  // 7. Purge Completed Jobs
+  // 8. Purge Completed Jobs
   if (intent === "purge_completed_jobs") {
     const res = await db.job.deleteMany({
       where: { status: "COMPLETED" },
@@ -243,8 +343,20 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function SuperAdminDashboard() {
-  const { user, pendingUsers, allStores, allUsers, recentJobs, apiLogs, apiStats, rateLimitStats, stats } =
-    useLoaderData<typeof loader>();
+  const {
+    user,
+    pendingUsers,
+    allStores,
+    allUsers,
+    recentJobs,
+    apiLogs,
+    apiStats,
+    rateLimitStats,
+    storeWabaBreakdown,
+    platformSettings,
+    platformBilling,
+    stats,
+  } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -254,7 +366,7 @@ export default function SuperAdminDashboard() {
 
   // Active Main Navigation Section
   const [activeSection, setActiveSection] = useState<
-    "OVERVIEW" | "API_LOGS" | "APPROVALS" | "STORES" | "USERS" | "JOBS"
+    "OVERVIEW" | "BILLING" | "SETTINGS" | "API_LOGS" | "APPROVALS" | "STORES" | "USERS" | "JOBS"
   >("OVERVIEW");
 
   // Filter & Search States
@@ -263,6 +375,8 @@ export default function SuperAdminDashboard() {
   const [userStatusFilter, setUserStatusFilter] = useState("ALL");
 
   const [storeSearch, setStoreSearch] = useState("");
+  const [billingSearch, setBillingSearch] = useState("");
+  const [billingPlanFilter, setBillingPlanFilter] = useState("ALL");
   const [showRateLimitDetails, setShowRateLimitDetails] = useState(false);
 
   // API Logs Filter States
@@ -273,7 +387,7 @@ export default function SuperAdminDashboard() {
 
   // Export Modal State
   const [showExportModal, setShowExportModal] = useState(false);
-  const [exportRangePreset, setExportRangePreset] = useState("1m"); // today, 7d, 1m, 3m, 1y, all, custom
+  const [exportRangePreset, setExportRangePreset] = useState("1m");
   const [exportStartDate, setExportStartDate] = useState("");
   const [exportEndDate, setExportEndDate] = useState("");
   const [exportStatus, setExportStatus] = useState("ALL");
@@ -308,6 +422,14 @@ export default function SuperAdminDashboard() {
     );
   });
 
+  // Filtered Billing Ledger
+  const filteredBillingLedger = platformBilling.storeBillingLedger.filter((s) => {
+    const query = billingSearch.toLowerCase();
+    const matchesSearch = s.shop.toLowerCase().includes(query) || (s.name && s.name.toLowerCase().includes(query));
+    const matchesPlan = billingPlanFilter === "ALL" || s.planId === billingPlanFilter;
+    return matchesSearch && matchesPlan;
+  });
+
   // Filtered API Logs
   const filteredApiLogs = apiLogs.filter((log) => {
     const query = apiSearch.toLowerCase();
@@ -325,7 +447,6 @@ export default function SuperAdminDashboard() {
     return matchesSearch && matchesStatus && matchesMethod;
   });
 
-  // Build Download Link URL directed to resource route
   const exportDownloadUrl = `/api/admin/export-logs?range=${exportRangePreset}${
     exportRangePreset === "custom" && exportStartDate ? `&startDate=${exportStartDate}` : ""
   }${exportRangePreset === "custom" && exportEndDate ? `&endDate=${exportEndDate}` : ""}&status=${exportStatus}`;
@@ -337,6 +458,20 @@ export default function SuperAdminDashboard() {
       label: "Overview & Limits",
       icon: "📊",
       badge: null,
+    },
+    {
+      id: "BILLING" as const,
+      label: "Merchant Billing & Plans",
+      icon: "💳",
+      badge: `${platformBilling.activePaidPlans} Paid`,
+      badgeColor: "bg-emerald-500/20 text-emerald-300 font-bold",
+    },
+    {
+      id: "SETTINGS" as const,
+      label: "Platform Support Settings",
+      icon: "🏢",
+      badge: "Dynamic",
+      badgeColor: "bg-slate-800 text-slate-400",
     },
     {
       id: "API_LOGS" as const,
@@ -412,7 +547,7 @@ export default function SuperAdminDashboard() {
             </button>
           </div>
 
-          {/* Super Admin Badge Banner (Expanded only) */}
+          {/* Super Admin Badge Banner */}
           {isSidebarOpen && (
             <div className="px-4 py-2.5 border-b border-slate-800/80 bg-slate-950/40 text-[11px] text-slate-400 flex items-center justify-between">
               <span>Platform Governance</span>
@@ -552,7 +687,7 @@ export default function SuperAdminDashboard() {
                 {menuItems.find((m) => m.id === activeSection)?.label || "Super Admin"}
               </h1>
               <p className="text-[11px] text-slate-400 hidden sm:block">
-                StorePing multi-tenant platform telemetry, WhatsApp Cloud API logs, and merchant governance.
+                StorePing multi-tenant platform telemetry, WhatsApp Cloud API billing, and merchant governance.
               </p>
             </div>
           </div>
@@ -599,7 +734,7 @@ export default function SuperAdminDashboard() {
           {/* SECTION 1: OVERVIEW & RATE LIMITS */}
           {activeSection === "OVERVIEW" && (
             <div className="space-y-6">
-              {/* Meta Application-Level Rate Limit Card */}
+              {/* Meta WhatsApp Business Management & Cloud API Rate Limit Card */}
               <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-sm space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="flex items-start gap-3">
@@ -608,7 +743,7 @@ export default function SuperAdminDashboard() {
                     </div>
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                        Application Rate Limit
+                        WhatsApp Business Cloud API (BUC) Rate Limit
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
                         <h3 className="text-sm font-bold text-white">{rateLimitStats.appName}</h3>
@@ -617,7 +752,7 @@ export default function SuperAdminDashboard() {
                         </span>
                       </div>
                       <p className="text-xs text-slate-400 mt-0.5">
-                        Meta Cloud API rolling 1-hour quota across all merchant access tokens.
+                        Official Meta WhatsApp Cloud API rolling 1-hour quota: 5,000 requests/hr per active WABA / Phone Number.
                       </p>
                     </div>
                   </div>
@@ -631,11 +766,11 @@ export default function SuperAdminDashboard() {
                   </button>
                 </div>
 
-                {/* Progress Bar */}
+                {/* Progress Bar Display */}
                 <div className="pt-2 border-t border-slate-800/80">
                   <div className="flex items-center justify-between text-xs mb-2">
                     <span className="text-slate-300 font-medium">
-                      {rateLimitStats.rateLimitUsedPercent}% of limit used
+                      {rateLimitStats.rateLimitUsedPercent}% of WABA hourly quota used
                     </span>
                     <span className="text-emerald-400 font-mono font-semibold">
                       {rateLimitStats.rateLimitRemainingPercent}% Remaining
@@ -657,30 +792,38 @@ export default function SuperAdminDashboard() {
                     />
                   </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 mt-2 font-mono">
-                    <span>Calls in last 60m: {rateLimitStats.callsInLastHour} API calls</span>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[11px] text-slate-400 mt-2 font-mono gap-1">
+                    <span>Platform 60m Calls: {rateLimitStats.callsInLastHour} calls</span>
                     <span>
-                      Max Quota: {rateLimitStats.maxHourlyAppLimit} calls/hr (200 × {rateLimitStats.activeUsersCount} users)
+                      Total Capacity: {rateLimitStats.totalPlatformWabaLimit} calls/hr (5,000 × {rateLimitStats.activeWabas} active WABAs)
                     </span>
                   </div>
                 </div>
 
-                {showRateLimitDetails && (
-                  <div className="mt-3 p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-2">
-                    <div className="text-slate-300 leading-relaxed font-semibold">
-                      Total hourly calls allowed across the app = <span className="text-emerald-400">200 × total active users</span>.
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-slate-400 font-mono text-[11px]">
-                      <div className="p-2 rounded bg-slate-900 border border-slate-800">
-                        Active Users: <span className="text-white font-semibold">{rateLimitStats.activeUsersCount}</span>
-                      </div>
-                      <div className="p-2 rounded bg-slate-900 border border-slate-800">
-                        Hourly Quota: <span className="text-emerald-400 font-semibold">{rateLimitStats.maxHourlyAppLimit} calls/hr</span>
-                      </div>
-                      <div className="p-2 rounded bg-slate-900 border border-slate-800">
-                        Rolling Window: <span className="text-slate-200 font-semibold">60 Minutes</span>
-                      </div>
-                    </div>
+                {/* Live Header Telemetry Badge if returned by Meta */}
+                {rateLimitStats.liveHeaderTelemetry && (
+                  <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex flex-wrap items-center gap-4 text-xs font-mono">
+                    <span className="text-slate-400 font-bold uppercase text-[10px]">
+                      Live Meta Header Telemetry:
+                    </span>
+                    {rateLimitStats.liveHeaderTelemetry.callCountPct !== null && (
+                      <span className="text-emerald-400">
+                        Call Count: {rateLimitStats.liveHeaderTelemetry.callCountPct}%
+                      </span>
+                    )}
+                    {rateLimitStats.liveHeaderTelemetry.totalCpuTimePct !== null && (
+                      <span className="text-slate-300">
+                        CPU Time: {rateLimitStats.liveHeaderTelemetry.totalCpuTimePct}%
+                      </span>
+                    )}
+                    {rateLimitStats.liveHeaderTelemetry.totalTimePct !== null && (
+                      <span className="text-slate-300">
+                        Total Time: {rateLimitStats.liveHeaderTelemetry.totalTimePct}%
+                      </span>
+                    )}
+                    <span className="text-slate-400">
+                      Throttle Regain: {rateLimitStats.liveHeaderTelemetry.estimatedTimeToRegainAccess}m
+                    </span>
                   </div>
                 )}
               </div>
@@ -699,67 +842,311 @@ export default function SuperAdminDashboard() {
 
                 <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Platform WhatsApp Spend (30d)
+                  </div>
+                  <div className="text-xl font-bold text-emerald-400 mt-1 font-mono">
+                    ₹{platformBilling.platformTotalMonthSpend.toFixed(2)}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">
+                    {platformBilling.totalBillableCount} Billable Deliveries
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Active Paid SaaS Stores
+                  </div>
+                  <div className="text-xl font-bold text-white mt-1 font-mono">
+                    {platformBilling.activePaidPlans} Stores
+                  </div>
+                  <div className="text-[10px] text-emerald-400 mt-0.5 font-medium">
+                    Growth & Pro Subscriptions
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                     Pending Approvals
                   </div>
                   <div className="text-xl font-bold text-amber-300 mt-1 font-mono">{stats.pendingCount}</div>
-                  <div className="text-[10px] text-amber-400/80 mt-0.5">Requires Super Admin Review</div>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Meta API Total Calls
-                  </div>
-                  <div className="text-xl font-bold text-white mt-1 font-mono">{apiStats.totalApiCalls}</div>
-                  <div className="text-[10px] text-emerald-400 mt-0.5">{apiStats.apiSuccessRate}% Success Rate</div>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Platform Dispatches
-                  </div>
-                  <div className="text-xl font-bold text-white mt-1 font-mono">{stats.totalDispatches}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">Automated Notifications</div>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    2-Way Support Chats
-                  </div>
-                  <div className="text-xl font-bold text-white mt-1 font-mono">{stats.totalConversations}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">Inbox Threads</div>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Order Confirmations
-                  </div>
-                  <div className="text-xl font-bold text-white mt-1 font-mono">{stats.totalOrderConfirmations}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">COD / Verified</div>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Cart Recoveries
-                  </div>
-                  <div className="text-xl font-bold text-white mt-1 font-mono">{stats.totalCartRecoveries}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">Abandoned Carts</div>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Platform Users
-                  </div>
-                  <div className="text-xl font-bold text-white mt-1 font-mono">{stats.totalUsers}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">Registered Members</div>
+                  <div className="text-[10px] text-amber-400/80 mt-0.5">Requires Review</div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* SECTION 2: META API LOGS & TELEMETRY */}
+          {/* SECTION 2: MERCHANT BILLING & PLANS CENTER */}
+          {activeSection === "BILLING" && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>💳</span>
+                    <span>Merchant Subscriptions & WhatsApp Billing Ledger</span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Monitor each connected store's active Shopify SaaS Plan, current month WhatsApp spend, and payment health.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <select
+                    value={billingPlanFilter}
+                    onChange={(e) => setBillingPlanFilter(e.target.value)}
+                    className="px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-slate-600"
+                  >
+                    <option value="ALL">All SaaS Plans</option>
+                    <option value="FREE">Free Starter ($0)</option>
+                    <option value="GROWTH">Growth ($19)</option>
+                    <option value="PRO">Pro / Scale ($49)</option>
+                  </select>
+
+                  <div className="relative w-56">
+                    <input
+                      type="text"
+                      value={billingSearch}
+                      onChange={(e) => setBillingSearch(e.target.value)}
+                      placeholder="Search store domain..."
+                      className="w-full pl-7 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-slate-600"
+                    />
+                    <span className="absolute left-2.5 top-2 text-[10px] text-slate-500">🔍</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Summary KPIs */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono">
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase font-sans">Total Platform Spend</div>
+                  <div className="text-base font-bold text-emerald-400 mt-0.5">₹{platformBilling.platformTotalMonthSpend.toFixed(2)}</div>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase font-sans">Billable Messages</div>
+                  <div className="text-base font-bold text-white mt-0.5">{platformBilling.totalBillableCount}</div>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase font-sans">Free CSW Support Msgs</div>
+                  <div className="text-base font-bold text-emerald-400 mt-0.5">{platformBilling.totalFreeCount} (₹0.00)</div>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase font-sans">Paid SaaS Subscriptions</div>
+                  <div className="text-base font-bold text-teal-400 mt-0.5">{platformBilling.activePaidPlans} Stores</div>
+                </div>
+              </div>
+
+              {/* Stores Billing Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                      <th className="pb-2.5">Shopify Store</th>
+                      <th className="pb-2.5">Shopify SaaS Plan</th>
+                      <th className="pb-2.5">Subscription Status</th>
+                      <th className="pb-2.5">WhatsApp Number</th>
+                      <th className="pb-2.5">Month-to-Date Spend</th>
+                      <th className="pb-2.5">Monthly Deliveries</th>
+                      <th className="pb-2.5">Payment Health</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                    {filteredBillingLedger.map((s) => (
+                      <tr key={s.id} className="hover:bg-slate-800/30 transition">
+                        <td className="py-3 font-sans font-semibold text-white">
+                          {s.shop}
+                          {s.name && <span className="text-slate-400 font-normal ml-1">({s.name})</span>}
+                        </td>
+                        <td className="py-3">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              s.planId === "PRO"
+                                ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                                : s.planId === "GROWTH"
+                                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                : "bg-slate-800 text-slate-400 border border-slate-700"
+                            }`}
+                          >
+                            {s.planId === "PRO" ? "PRO ($49)" : s.planId === "GROWTH" ? "GROWTH ($19)" : "FREE ($0)"}
+                          </span>
+                        </td>
+                        <td className="py-3 font-sans">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              s.subscriptionStatus === "ACTIVE"
+                                ? "bg-emerald-500/10 text-emerald-400"
+                                : "bg-amber-500/10 text-amber-300"
+                            }`}
+                          >
+                            {s.subscriptionStatus}
+                          </span>
+                        </td>
+                        <td className="py-3 text-slate-300">
+                          {s.displayPhoneNumber || <span className="text-slate-500">Not Connected</span>}
+                        </td>
+                        <td className="py-3 text-white font-bold">
+                          ₹{s.monthToDateSpend.toFixed(2)}
+                        </td>
+                        <td className="py-3 text-slate-300">
+                          {s.monthlyMessageCount} messages
+                        </td>
+                        <td className="py-3 font-sans">
+                          {s.alertType === "PAYMENT_REQUIRED" ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-300 border border-red-500/40">
+                              ⚠️ Card Declined
+                            </span>
+                          ) : s.alertType === "LIMIT_EXCEEDED" ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              100% Budget Reached
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400">
+                              ● Healthy
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SECTION 3: PLATFORM SUPPORT CONFIGURATION (DYNAMIC SETTINGS) */}
+          {activeSection === "SETTINGS" && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Left 2 Cols: Form to Edit Dynamic Support Settings */}
+              <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-sm space-y-4">
+                <div>
+                  <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>🏢</span>
+                    <span>Everon Labs Global Support Configuration</span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Manage the dynamic billing support email, direct phone number, WhatsApp contact, and operating hours rendered across all merchant portals and Shopify apps.
+                  </p>
+                </div>
+
+                <Form method="post" className="space-y-4 pt-2">
+                  <input type="hidden" name="intent" value="update_platform_settings" />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Billing Support Email
+                      </label>
+                      <input
+                        type="email"
+                        name="supportEmail"
+                        defaultValue={platformSettings.supportEmail}
+                        required
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-slate-600"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-0.5 block">
+                        Displayed on invoice footers and help cards.
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Direct Support Phone Number
+                      </label>
+                      <input
+                        type="text"
+                        name="supportPhone"
+                        defaultValue={platformSettings.supportPhone}
+                        required
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white font-mono focus:outline-none focus:border-slate-600"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-0.5 block">
+                        Official hotline for merchant calls.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Support WhatsApp Number (Digits only with country code)
+                      </label>
+                      <input
+                        type="text"
+                        name="supportWhatsApp"
+                        defaultValue={platformSettings.supportWhatsApp}
+                        required
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white font-mono focus:outline-none focus:border-slate-600"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-0.5 block">
+                        Used to generate 1-click WhatsApp support links (`wa.me/919374626600`).
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Support Operating Hours
+                      </label>
+                      <input
+                        type="text"
+                        name="supportHours"
+                        defaultValue={platformSettings.supportHours}
+                        required
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-slate-600"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-0.5 block">
+                        e.g., Monday - Saturday: 9:00 AM - 8:00 PM IST
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-800 flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition shadow-sm"
+                    >
+                      {isSubmitting ? "Saving Changes..." : "Save Platform Support Settings"}
+                    </button>
+                  </div>
+                </Form>
+              </div>
+
+              {/* Right Col: Live Preview of Dynamic Support Card */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-3 h-fit">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Live Merchant Preview
+                </div>
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-sm">
+                      🏢
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white">Everon Labs Support</div>
+                      <div className="text-[10px] text-slate-400">Billing & WhatsApp Assistance</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 text-xs text-slate-300 font-mono text-[11px] pt-1">
+                    <div>✉️ {platformSettings.supportEmail}</div>
+                    <div>📞 {platformSettings.supportPhone}</div>
+                    <div className="text-slate-400 text-[10px] font-sans">{platformSettings.supportHours}</div>
+                  </div>
+
+                  <div className="pt-2">
+                    <span className="block w-full py-1.5 text-center bg-emerald-500 text-slate-950 font-bold rounded-lg text-[11px]">
+                      💬 Chat on WhatsApp
+                    </span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  This card updates automatically on `/app/billing` and `/portal/billing` whenever you save changes.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* SECTION 4: META API LOGS & TELEMETRY */}
           {activeSection === "API_LOGS" && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
-              {/* Quick Metrics Bar */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
                   <div className="text-[10px] font-bold text-slate-400 uppercase">24-Hour Calls</div>
@@ -1021,7 +1408,6 @@ export default function SuperAdminDashboard() {
                       </button>
                     </div>
 
-                    {/* Quick Preset Buttons */}
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
                         Date Range Presets
@@ -1051,7 +1437,6 @@ export default function SuperAdminDashboard() {
                       </div>
                     </div>
 
-                    {/* Custom Date Range Option */}
                     <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-semibold text-slate-300">Custom Range</span>
@@ -1094,7 +1479,6 @@ export default function SuperAdminDashboard() {
                       </div>
                     </div>
 
-                    {/* Status Scope Filter */}
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
                         Status Filter
@@ -1111,7 +1495,6 @@ export default function SuperAdminDashboard() {
                       </select>
                     </div>
 
-                    {/* Modal Action Buttons */}
                     <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2.5">
                       <button
                         type="button"
@@ -1139,7 +1522,7 @@ export default function SuperAdminDashboard() {
             </div>
           )}
 
-          {/* SECTION 3: PENDING APPROVALS */}
+          {/* SECTION 5: PENDING APPROVALS */}
           {activeSection === "APPROVALS" && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
@@ -1222,7 +1605,7 @@ export default function SuperAdminDashboard() {
             </div>
           )}
 
-          {/* SECTION 4: STORES DIRECTORY */}
+          {/* SECTION 6: STORES DIRECTORY */}
           {activeSection === "STORES" && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1251,8 +1634,8 @@ export default function SuperAdminDashboard() {
                     <tr className="border-b border-slate-800 text-slate-400 font-medium">
                       <th className="pb-2.5">Shopify Domain</th>
                       <th className="pb-2.5">WhatsApp Number</th>
+                      <th className="pb-2.5">SaaS Plan</th>
                       <th className="pb-2.5">Quality Health</th>
-                      <th className="pb-2.5">Tier Limit</th>
                       <th className="pb-2.5">Dispatches</th>
                       <th className="pb-2.5">Active Users</th>
                       <th className="pb-2.5 text-right">Inbox</th>
@@ -1269,6 +1652,11 @@ export default function SuperAdminDashboard() {
                           {s.displayPhoneNumber || <span className="text-slate-500 text-[11px]">Not Connected</span>}
                         </td>
                         <td className="py-3">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                            {s.planId || "FREE"}
+                          </span>
+                        </td>
+                        <td className="py-3">
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
                               s.qualityRating === "GREEN"
@@ -1280,9 +1668,6 @@ export default function SuperAdminDashboard() {
                           >
                             {s.qualityRating || "GREEN"}
                           </span>
-                        </td>
-                        <td className="py-3 font-mono text-slate-300">
-                          {s.messagingLimit || "TIER_250"}
                         </td>
                         <td className="py-3 font-mono text-white">{s._count.messages}</td>
                         <td className="py-3 font-mono text-slate-400">{s._count.users} members</td>
@@ -1303,7 +1688,7 @@ export default function SuperAdminDashboard() {
             </div>
           )}
 
-          {/* SECTION 5: USER DIRECTORY */}
+          {/* SECTION 7: USER DIRECTORY */}
           {activeSection === "USERS" && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1454,7 +1839,7 @@ export default function SuperAdminDashboard() {
             </div>
           )}
 
-          {/* SECTION 6: BACKGROUND QUEUE */}
+          {/* SECTION 8: BACKGROUND QUEUE */}
           {activeSection === "JOBS" && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

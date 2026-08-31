@@ -60,6 +60,17 @@ model Merchant {
   dailyLimitResetAt      DateTime  @default(now())
   alertType              String?   // LIMIT_EXCEEDED, PAYMENT_REQUIRED, QUALITY_FLAGGED, NONE
   alertMessage           String?   @db.Text
+
+  // Shopify App SaaS Subscription & Plan Limits
+  planId                 String    @default("FREE") // FREE, GROWTH, PRO
+  subscriptionStatus     String    @default("ACTIVE") // ACTIVE, PENDING, PAST_DUE, CANCELLED
+  shopifySubscriptionId  String?
+  billingCurrency        String    @default("INR")
+  monthlyBudgetLimit     Float     @default(1000.0) // Monthly alert threshold
+  currentMonthSpend      Float     @default(0.0)
+  budgetAlert50Sent      Boolean   @default(false)
+  budgetAlert80Sent      Boolean   @default(false)
+  budgetAlert100Sent     Boolean   @default(false)
   
   // Automation Toggles (7 Core Flows)
   cartRecoveryEnabled      Boolean   @default(true)
@@ -205,19 +216,25 @@ model CartRecovery {
 
 // 6. Message Audit Log & Delivery Receipts
 model MessageLog {
-  id             String    @id @default(uuid())
-  merchantId     String
-  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  recipientPhone String    // Masked for DPDP logs
-  customerName   String?
-  eventType      String
-  metaMessageId  String?   @unique
-  status         String    @default("SENT") // SENT, DELIVERED, READ, FAILED
-  errorMessage   String?
+  id              String    @id @default(uuid())
+  merchantId      String
+  merchant        Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  recipientPhone  String    // Masked for DPDP logs
+  customerName    String?
+  eventType       String
+  metaMessageId   String?   @unique
+  status          String    @default("SENT") // SENT, DELIVERED, READ, FAILED
+  errorMessage    String?
   
-  createdAt      DateTime  @default(now())
+  // Real-time Pricing & Meta Billing Telemetry
+  pricingCategory String?   @default("UTILITY") // MARKETING, UTILITY, AUTHENTICATION, SERVICE
+  isBillable      Boolean   @default(true)
+  estimatedCost   Float     @default(0.0)
+  
+  createdAt       DateTime  @default(now())
 
   @@index([merchantId, createdAt])
+  @@index([merchantId, pricingCategory])
   @@map("storeping_MessageLog")
 }
 
@@ -366,4 +383,18 @@ model MetaApiLog {
   @@index([endpoint])
   @@index([createdAt])
   @@map("storeping_MetaApiLog")
+}
+
+// 13. Dynamic Platform Support & Help Settings (Configurable via Super Admin)
+model PlatformSetting {
+  id              String   @id @default("global")
+  supportEmail    String   @default("support@everonlab.in")
+  supportPhone    String   @default("+91 93746 26600")
+  supportWhatsApp String   @default("919374626600")
+  supportHours    String   @default("Monday - Saturday: 9:00 AM - 8:00 PM IST")
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("storeping_PlatformSetting")
 }

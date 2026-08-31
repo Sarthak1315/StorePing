@@ -20,6 +20,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { seedDefaultTemplates } from "../utils/template.server";
 import { refreshWabaHealth } from "../utils/meta-whatsapp.server";
+import { getMerchantBillingSummary } from "../utils/meta-pricing.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -137,8 +138,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  const billingSummary = await getMerchantBillingSummary(merchant.id);
+
   return json({
     merchant,
+    billingSummary,
     metrics: {
       totalSent,
       deliveryRate,
@@ -156,7 +160,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export default function DashboardOverview() {
-  const { merchant, metrics, customerNotifications, recentMessages } = useLoaderData<typeof loader>();
+  const { merchant, billingSummary, metrics, customerNotifications, recentMessages } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
   const isConnected = merchant.isWhatsAppConnected;
@@ -173,6 +177,10 @@ export default function DashboardOverview() {
         onAction: () => navigate(isConnected ? "/app/settings" : "/app/connect"),
       }}
       secondaryActions={[
+        {
+          content: "💳 Plans & Billing",
+          onAction: () => navigate("/app/billing"),
+        },
         {
           content: "📦 Orders",
           onAction: () => navigate("/app/orders"),

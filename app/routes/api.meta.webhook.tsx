@@ -3,6 +3,7 @@ import db from "../db.server";
 import { logInfo, logWarn } from "../utils/logger.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 import { syncOrderUpdateToShopify } from "../utils/shopify-order.server";
+import { calculateMessageCost, checkAndTriggerSpendAlerts } from "../utils/meta-pricing.server";
 
 /**
  * Meta Webhook Verification Handshake (GET).
@@ -59,18 +60,50 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           });
         }
 
-        // 1. Message Status Updates (sent, delivered, read, failed)
+        // 1. Message Status Updates (sent, delivered, read, failed) & Pricing Telemetry
         const statuses = value.statuses || [];
         for (const statusObj of statuses) {
           const metaMessageId = statusObj.id;
           const status = (statusObj.status || "").toUpperCase(); // DELIVERED, READ, FAILED
+          const pricingObj = statusObj.pricing; // e.g. { billable: true, pricing_model: "PMP", category: "marketing" }
+          const recipientId = statusObj.recipient_id || "";
+
+          // Detect Meta Card / Payment Failure Error Codes
+          const errorCode = statusObj.errors?.[0]?.code;
+          const errorMessage = statusObj.errors?.[0]?.message || "";
+
+          if (merchant && (errorCode === 131042 || errorCode === 131045 || errorMessage.toLowerCase().includes("payment"))) {
+            await db.merchant.update({
+              where: { id: merchant.id },
+              data: {
+                alertType: "PAYMENT_REQUIRED",
+                alertMessage: "⚠️ Your payment method on Meta was declined. Please update your card in Meta Business Suite to avoid message delivery pauses.",
+              },
+            });
+          }
 
           if (metaMessageId && status) {
+            // Determine pricing category & cost
+            let pricingCategory = pricingObj?.category ? pricingObj.category.toUpperCase() : "UTILITY";
+            let isBillable = pricingObj?.billable ?? (status === "DELIVERED" || status === "READ");
+            
+            const costCalc = calculateMessageCost(
+              recipientId,
+              pricingCategory,
+              false,
+              merchant?.billingCurrency || "INR"
+            );
+
+            const estimatedCost = isBillable ? costCalc.estimatedCost : 0.0;
+
             await db.messageLog.updateMany({
               where: { metaMessageId },
               data: {
                 status: status === "DELIVERED" ? "DELIVERED" : status === "READ" ? "READ" : status === "FAILED" ? "FAILED" : "SENT",
-                ...(statusObj.errors?.[0]?.message ? { errorMessage: statusObj.errors[0].message } : {}),
+                pricingCategory,
+                isBillable,
+                estimatedCost,
+                ...(errorMessage ? { errorMessage } : {}),
               },
             });
 
@@ -78,9 +111,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               where: { metaMessageId },
               data: {
                 status: status === "DELIVERED" ? "DELIVERED" : status === "READ" ? "READ" : status === "FAILED" ? "FAILED" : "SENT",
-                ...(statusObj.errors?.[0]?.message ? { errorMessage: statusObj.errors[0].message } : {}),
+                ...(errorMessage ? { errorMessage } : {}),
               },
             });
+
+            // Update merchant current month spend & evaluate budget alerts if delivered
+            if (merchant && isBillable && (status === "DELIVERED" || status === "READ")) {
+              const updated = await db.merchant.update({
+                where: { id: merchant.id },
+                data: {
+                  currentMonthSpend: { increment: estimatedCost },
+                },
+                select: { id: true, currentMonthSpend: true },
+              });
+              await checkAndTriggerSpendAlerts(merchant.id, updated.currentMonthSpend);
+            }
           }
         }
 

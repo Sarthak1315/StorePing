@@ -73,6 +73,12 @@ export default function PortalLayout() {
                 icon: "👥",
                 badge: user.role,
               },
+              {
+                name: "Billing & Plans",
+                href: "/portal/billing",
+                icon: "💳",
+                badge: "SaaS",
+              },
             ]
           : []),
       ];
