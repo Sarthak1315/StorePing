@@ -4,6 +4,10 @@ import { Link, NavLink, Outlet, useLoaderData, useLocation, Form } from "@remix-
 import { requirePortalUser } from "../utils/portal-auth.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
+  const url = new URL(request.url);
+  if (url.pathname.endsWith("/login")) {
+    return json({ user: null });
+  }
   const user = await requirePortalUser(request);
   return json({ user });
 }
@@ -11,6 +15,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
 export default function PortalLayout() {
   const { user } = useLoaderData<typeof loader>();
   const location = useLocation();
+
+  if (!user) {
+    return <Outlet />;
+  }
 
   const isAgent = user.role === "AGENT";
   const isOwnerOrAdmin = user.role === "OWNER" || user.role === "MANAGER";
@@ -68,23 +76,49 @@ export default function PortalLayout() {
 
           {/* Connected WhatsApp Account Status Pill */}
           <div className="px-4 py-3 border-b border-slate-800/50 bg-slate-950/40">
-            <div className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold mb-1">
-              Store Organization
+            <div className="flex items-center justify-between text-[11px] uppercase tracking-wider text-slate-400 font-semibold mb-1">
+              <span>Store Organization</span>
+              {user.role === "SUPER_ADMIN" && (
+                <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.2 rounded font-bold border border-purple-500/30">
+                  SUPER ADMIN
+                </span>
+              )}
             </div>
-            <div className="flex items-center justify-between">
-              <div className="truncate text-xs font-semibold text-slate-200">
-                {user.merchant.shop}
+
+            {/* Store Switcher for Super Admin */}
+            {user.role === "SUPER_ADMIN" && user.allMerchants && user.allMerchants.length > 1 ? (
+              <div className="mt-1.5 mb-2">
+                <select
+                  value={user.merchant.shop}
+                  onChange={(e) => {
+                    window.location.href = `${location.pathname}?shop=${e.target.value}`;
+                  }}
+                  className="w-full px-2 py-1.5 bg-slate-900 border border-purple-500/40 rounded-lg text-xs font-semibold text-purple-200 focus:outline-none focus:ring-1 focus:ring-purple-400"
+                >
+                  {user.allMerchants.map((m) => (
+                    <option key={m.id} value={m.shop}>
+                      🏬 {m.shop}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <span
-                className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                  user.merchant.isWhatsAppConnected
-                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
-                    : "bg-amber-500/10 text-amber-400 border border-amber-500/30"
-                }`}
-              >
-                {user.merchant.isWhatsAppConnected ? "● Live" : "○ Disconnected"}
-              </span>
-            </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <div className="truncate text-xs font-semibold text-slate-200">
+                  {user.merchant.shop}
+                </div>
+                <span
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                    user.merchant.isWhatsAppConnected
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                      : "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                  }`}
+                >
+                  {user.merchant.isWhatsAppConnected ? "● Live" : "○ Disconnected"}
+                </span>
+              </div>
+            )}
+
             {user.merchant.displayPhoneNumber && (
               <div className="text-[11px] text-slate-400 mt-1 font-mono">
                 {user.merchant.displayPhoneNumber}

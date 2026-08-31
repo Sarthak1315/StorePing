@@ -65,9 +65,10 @@ export type PortalUser = {
   id: string;
   email: string;
   name: string;
-  role: "OWNER" | "MANAGER" | "AGENT" | string;
+  role: "SUPER_ADMIN" | "OWNER" | "MANAGER" | "AGENT" | string;
   merchantId: string;
   avatarUrl: string | null;
+  allMerchants?: Array<{ id: string; shop: string; name: string | null }>;
   merchant: {
     id: string;
     shop: string;
@@ -107,6 +108,48 @@ export async function getPortalUser(request: Request): Promise<PortalUser | null
     });
 
     if (!user || !user.isActive) return null;
+
+    // If Super Admin, fetch all merchants and allow switching via ?shop= query param
+    if (user.role === "SUPER_ADMIN") {
+      const allMerchants = await db.merchant.findMany({
+        select: {
+          id: true,
+          shop: true,
+          name: true,
+          displayPhoneNumber: true,
+          isWhatsAppConnected: true,
+          qualityRating: true,
+          messagingLimit: true,
+          phoneNumberId: true,
+          wabaId: true,
+        },
+      });
+
+      const url = new URL(request.url);
+      const switchShop = url.searchParams.get("shop");
+      const selectedMerchant = switchShop
+        ? allMerchants.find((m) => m.shop === switchShop) || allMerchants[0]
+        : user.merchant || allMerchants[0];
+
+      return {
+        ...user,
+        merchantId: selectedMerchant?.id || "",
+        merchant: selectedMerchant || {
+          id: "",
+          shop: "all-stores",
+          name: "Global Platform",
+          displayPhoneNumber: null,
+          isWhatsAppConnected: false,
+          qualityRating: "GREEN",
+          messagingLimit: "UNLIMITED",
+          phoneNumberId: null,
+          wabaId: null,
+        },
+        allMerchants: allMerchants.map((m) => ({ id: m.id, shop: m.shop, name: m.name })),
+      } as PortalUser;
+    }
+
+    if (!user.merchant) return null;
     return user as PortalUser;
   } catch (error) {
     console.error("[PortalAuth] Error fetching user:", error);
@@ -129,11 +172,16 @@ export async function requirePortalUser(
 
 export async function requireRole(
   request: Request,
-  allowedRoles: Array<"OWNER" | "MANAGER" | "AGENT">
+  allowedRoles: Array<"SUPER_ADMIN" | "OWNER" | "MANAGER" | "AGENT">
 ): Promise<PortalUser> {
   const user = await requirePortalUser(request);
+  
+  // Super Admin has unrestricted platform access
+  if (user.role === "SUPER_ADMIN") {
+    return user;
+  }
+
   if (!allowedRoles.includes(user.role as any)) {
-    // If agent tries to access restricted area, redirect to inbox
     if (user.role === "AGENT") {
       throw redirect("/portal/inbox");
     }

@@ -302,12 +302,12 @@ model Log {
 // 10. Organization Team Members & RBAC User Accounts
 model User {
   id             String    @id @default(uuid())
-  merchantId     String
-  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchantId     String?
+  merchant       Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   email          String    @unique
   passwordHash   String
   name           String
-  role           String    @default("AGENT") // OWNER, MANAGER, AGENT
+  role           String    @default("AGENT") // SUPER_ADMIN, OWNER, MANAGER, AGENT
   avatarUrl      String?
   isActive       Boolean   @default(true)
   lastLoginAt    DateTime?
