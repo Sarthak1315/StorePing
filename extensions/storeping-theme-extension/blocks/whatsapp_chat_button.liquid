@@ -17,12 +17,18 @@
   {% assign encoded_msg = custom_text | url_encode %}
   {% assign wa_url = 'https://wa.me/' | append: clean_phone | append: '?text=' | append: encoded_msg %}
 
+  {% if block.settings.position == 'bottom-left' %}
+    {% assign pos_inline = 'left: 24px !important; right: auto !important; flex-direction: row !important;' %}
+  {% else %}
+    {% assign pos_inline = 'right: 24px !important; left: auto !important; flex-direction: row-reverse !important;' %}
+  {% endif %}
+
   <a
     href="{{ wa_url }}"
     target="_blank"
     rel="noopener noreferrer"
     class="storeping-wa-float storeping-pos-{{ block.settings.position | default: 'bottom-right' }}"
-    style="--storeping-bg-color: {{ block.settings.button_color | default: '#25D366' }};"
+    style="--storeping-bg-color: {{ block.settings.button_color | default: '#25D366' }}; {{ pos_inline }}"
     aria-label="Chat with Customer Support on WhatsApp"
   >
     {% if block.settings.tooltip_text != blank %}
