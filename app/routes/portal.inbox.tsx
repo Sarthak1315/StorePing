@@ -102,7 +102,7 @@ export async function action({ request }: ActionFunctionArgs) {
   // 1. Send Outbound Text or PDF / Image Message (Supports Direct File Upload from Computer)
   if (intent === "send_message") {
     const messageText = (formData.get("messageText") as string)?.trim();
-    const mediaUrl = (formData.get("mediaUrl") as string)?.trim() || null;
+    let mediaUrl = (formData.get("mediaUrl") as string)?.trim() || null;
     let mediaType = (formData.get("mediaType") as "IMAGE" | "DOCUMENT" | null) || null;
     let documentName = (formData.get("documentName") as string)?.trim() || null;
     const file = formData.get("file") as File | null;
@@ -125,10 +125,12 @@ export async function action({ request }: ActionFunctionArgs) {
           else mimeType = "application/pdf";
         }
 
-        if (mimeType.includes("pdf") || mimeType.includes("document") || mimeType.includes("msword")) {
+        if (mimeType === "application/pdf" || fileName.toLowerCase().endsWith(".pdf")) {
           mediaType = "DOCUMENT";
         } else if (mimeType.startsWith("image/")) {
           mediaType = "IMAGE";
+          // Generate data URI so portal UI can render the image preview in the chat thread
+          mediaUrl = `data:${mimeType};base64,${fileBuffer.toString("base64")}`;
         } else {
           mediaType = "DOCUMENT";
         }
@@ -162,41 +164,6 @@ export async function action({ request }: ActionFunctionArgs) {
       if (!result.success) {
         return json({ success: false, error: result.error || "Failed to send message via WhatsApp.", updatedStatus: null as string | null }, { status: 400 });
       }
-
-      // Record outbound message in database
-      const conversation = await db.conversation.upsert({
-        where: {
-          merchantId_customerPhone: {
-            merchantId: user.merchantId,
-            customerPhone,
-          },
-        },
-        create: {
-          merchantId: user.merchantId,
-          customerPhone,
-          lastMessageText: messageText || (mediaType === "DOCUMENT" ? `📄 ${documentName || "Document.pdf"}` : "📷 Image"),
-          lastMessageAt: new Date(),
-          unreadCount: 0,
-        },
-        update: {
-          lastMessageText: messageText || (mediaType === "DOCUMENT" ? `📄 ${documentName || "Document.pdf"}` : "📷 Image"),
-          lastMessageAt: new Date(),
-          unreadCount: 0,
-        },
-      });
-
-      await db.chatMessage.create({
-        data: {
-          conversationId: conversation.id,
-          sender: "MERCHANT",
-          messageType: mediaType || "TEXT",
-          bodyText: messageText || (mediaType === "DOCUMENT" ? (documentName || "Attached File") : ""),
-          mediaUrl: mediaUrl || null,
-          caption: mediaType === "DOCUMENT" ? (documentName || "Document.pdf") : null,
-          metaMessageId: result.messageId || `portal_${Date.now()}`,
-          status: "SENT",
-        },
-      });
 
       return json({ success: true, error: null as string | null, updatedStatus: null as string | null });
     } catch (err: any) {
@@ -441,14 +408,30 @@ export default function PortalInbox() {
                       )}
 
                       {/* Image Attachment Rendering */}
-                      {isImage && msg.mediaUrl && (
-                        <div className="mb-2 rounded-lg overflow-hidden border border-white/10">
-                          <img src={msg.mediaUrl} alt="Attached Media" className="max-h-48 w-full object-cover" />
+                      {isImage && (
+                        <div className="mb-2 rounded-lg overflow-hidden border border-white/10 bg-black/20">
+                          {msg.mediaUrl ? (
+                            <img
+                              src={msg.mediaUrl}
+                              alt="Attached Media"
+                              className="max-h-60 max-w-full rounded-lg object-contain"
+                            />
+                          ) : (
+                            <div className="p-3 text-xs flex items-center gap-2 text-slate-300">
+                              <span>📷</span>
+                              <span>Image Media Attachment</span>
+                            </div>
+                          )}
                         </div>
                       )}
 
                       {/* Message Body Text */}
-                      {msg.bodyText && <p className="leading-relaxed whitespace-pre-wrap text-[12.5px]">{msg.bodyText}</p>}
+                      {msg.bodyText &&
+                        msg.bodyText !== "📷 Image" &&
+                        msg.bodyText !== "WhatsApp Notification" &&
+                        !msg.bodyText.startsWith("📄 ") && (
+                          <p className="leading-relaxed whitespace-pre-wrap text-[12.5px]">{msg.bodyText}</p>
+                        )}
 
                       {/* Message Meta Info */}
                       <div

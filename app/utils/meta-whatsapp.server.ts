@@ -721,7 +721,15 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
 
     // Record in 2-Way Conversations and Chat Messages
     const cleanPhone = recipientPhone.replace(/[^0-9]/g, "");
-    const displayedBody = bodyText || (templateName ? `[Template: ${templateName}]` : "WhatsApp Notification");
+    const displayedBody =
+      bodyText ||
+      (mediaType === "IMAGE"
+        ? "📷 Image"
+        : mediaType === "DOCUMENT"
+        ? `📄 ${fileName || "Document.pdf"}`
+        : templateName
+        ? `[Template: ${templateName}]`
+        : "WhatsApp Notification");
 
     try {
       const conv = await db.conversation.upsert({
@@ -751,9 +759,9 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
           conversationId: conv.id,
           sender: senderRole,
           messageType: mediaType ? mediaType : templateName ? "TEMPLATE" : buttonType ? "INTERACTIVE" : "TEXT",
-          bodyText: displayedBody,
+          bodyText: bodyText || (mediaType === "IMAGE" ? "📷 Image" : mediaType === "DOCUMENT" ? `📄 ${fileName || "Document.pdf"}` : displayedBody),
           mediaUrl: mediaUrl || null,
-          caption: bodyText || null,
+          caption: bodyText || (mediaType === "DOCUMENT" ? (fileName || "Document.pdf") : null),
           metaMessageId: messageId,
           status: "SENT",
         },
