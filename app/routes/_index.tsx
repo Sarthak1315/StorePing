@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { Form, useLoaderData } from "@remix-run/react";
+import { Form, Link, useLoaderData } from "@remix-run/react";
 import { useState } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -228,6 +228,34 @@ export default function LandingAndLoginPage() {
           </div>
         </div>
       </footer>
+    </div>
+  );
+}
+
+export function ErrorBoundary() {
+  return (
+    <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center">
+      <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-3xl mb-4 font-bold">
+        💬
+      </div>
+      <h1 className="text-2xl font-bold text-white mb-2">Welcome to StorePing</h1>
+      <p className="text-sm text-slate-400 mb-6 max-w-md">
+        Automate high-converting WhatsApp recovery, shipping updates, and 2-way live support for your Shopify store.
+      </p>
+      <div className="flex gap-4">
+        <a
+          href="/portal/login"
+          className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-sm transition"
+        >
+          Sign In to Portal
+        </a>
+        <a
+          href="/"
+          className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-xl text-sm transition"
+        >
+          Reload Page
+        </a>
+      </div>
     </div>
   );
 }
