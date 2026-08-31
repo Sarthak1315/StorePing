@@ -12,46 +12,54 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const selectedPhone = url.searchParams.get("phone");
   const filter = url.searchParams.get("filter") || "ALL";
 
-  // Run all conversation, template, and active chat queries in parallel for ultra-fast response
-  const [conversations, templates, activeConversation, activeOrder] = await Promise.all([
-    db.conversation.findMany({
-      where: { merchantId: user.merchantId },
-      orderBy: { lastMessageAt: "desc" },
-      include: {
-        messages: {
-          take: 1,
-          orderBy: { createdAt: "desc" },
-        },
+  const conversationsPromise = db.conversation.findMany({
+    where: { merchantId: user.merchantId },
+    orderBy: { lastMessageAt: "desc" },
+    include: {
+      messages: {
+        take: 1,
+        orderBy: { createdAt: "desc" },
       },
-    }),
-    db.messageTemplate.findMany({
-      where: { merchantId: user.merchantId, isActive: true },
-      take: 6,
-    }),
-    selectedPhone
-      ? db.conversation.findUnique({
-          where: {
-            merchantId_customerPhone: {
-              merchantId: user.merchantId,
-              customerPhone: selectedPhone,
-            },
-          },
-          include: {
-            messages: {
-              orderBy: { createdAt: "asc" },
-            },
-          },
-        })
-      : Promise.resolve(null),
-    selectedPhone
-      ? db.orderConfirmation.findFirst({
-          where: {
+    },
+  });
+
+  const templatesPromise = db.template.findMany({
+    where: { merchantId: user.merchantId, isActive: true },
+    take: 6,
+  });
+
+  const activeConversationPromise = selectedPhone
+    ? db.conversation.findUnique({
+        where: {
+          merchantId_customerPhone: {
             merchantId: user.merchantId,
             customerPhone: selectedPhone,
           },
-          orderBy: { createdAt: "desc" },
-        })
-      : Promise.resolve(null),
+        },
+        include: {
+          messages: {
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      })
+    : null;
+
+  const activeOrderPromise = selectedPhone
+    ? db.orderConfirmation.findFirst({
+        where: {
+          merchantId: user.merchantId,
+          customerPhone: selectedPhone,
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    : null;
+
+  // Run all queries concurrently in parallel
+  const [conversations, templates, activeConversation, activeOrder] = await Promise.all([
+    conversationsPromise,
+    templatesPromise,
+    activeConversationPromise,
+    activeOrderPromise,
   ]);
 
   // Mark unread messages as read asynchronously without blocking UI
@@ -232,7 +240,7 @@ export default function PortalInbox() {
   const [attachFileName, setAttachFileName] = useState("Invoice.pdf");
 
   // Filter conversations
-  const filteredConversations = conversations.filter((c) => {
+  const filteredConversations = conversations.filter((c: (typeof conversations)[number]) => {
     const matchesSearch =
       c.customerPhone.includes(searchQuery) ||
       (c.customerName && c.customerName.toLowerCase().includes(searchQuery.toLowerCase())) ||
@@ -275,7 +283,7 @@ export default function PortalInbox() {
               No conversations found.
             </div>
           ) : (
-            filteredConversations.map((c) => {
+            filteredConversations.map((c: (typeof conversations)[number]) => {
               const isSelected = selectedPhone === c.customerPhone;
               const displayName =
                 !c.customerName || c.customerName.trim() === "." || c.customerName.trim() === "-"

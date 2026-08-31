@@ -261,13 +261,6 @@ export interface SendWhatsAppMessageOptions {
   eventType: string;
   bodyText?: string;
   mediaUrl?: string | null;
-  mediaType?: "IMAGE" | "VIDEO" | "DOCUMENT" | "AUDIO" | null;
-  templateName?: string;
-  templateLanguage?: string;
-  templateParameters?: string[];
-  headerType?: string | null;
-  headerText?: string | null;
-  mediaUrl?: string | null;
   mediaId?: string | null;
   fileName?: string | null;
   mediaType?: "IMAGE" | "VIDEO" | "DOCUMENT" | "AUDIO" | null;

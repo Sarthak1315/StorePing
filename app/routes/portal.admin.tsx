@@ -132,6 +132,7 @@ export async function action({ request }: ActionFunctionArgs) {
     });
     return json({
       success: `Approved account for ${updated.name} (${updated.email}). User can now log in!`,
+      error: null as string | null,
     });
   }
 
@@ -146,6 +147,7 @@ export async function action({ request }: ActionFunctionArgs) {
     });
     return json({
       success: `Rejected registration request for ${updated.email}.`,
+      error: null as string | null,
     });
   }
 
@@ -153,22 +155,22 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "toggle_user_status") {
     const currentStatus = formData.get("currentStatus") === "true";
     if (targetUserId === user.id) {
-      return json({ error: "Cannot deactivate Super Admin account." }, { status: 400 });
+      return json({ success: null as string | null, error: "Cannot deactivate Super Admin account." }, { status: 400 });
     }
     await db.user.update({
       where: { id: targetUserId },
       data: { isActive: !currentStatus },
     });
-    return json({ success: "User status updated." });
+    return json({ success: "User status updated.", error: null as string | null });
   }
 
   // 4. Delete User Account
   if (intent === "delete_user") {
     if (targetUserId === user.id) {
-      return json({ error: "Cannot delete Super Admin account." }, { status: 400 });
+      return json({ success: null as string | null, error: "Cannot delete Super Admin account." }, { status: 400 });
     }
     await db.user.delete({ where: { id: targetUserId } });
-    return json({ success: "User account deleted." });
+    return json({ success: "User account deleted.", error: null as string | null });
   }
 
   // 5. Retry Background Job
@@ -182,13 +184,13 @@ export async function action({ request }: ActionFunctionArgs) {
         error: null,
       },
     });
-    return json({ success: "Job reset to PENDING for immediate retry." });
+    return json({ success: "Job reset to PENDING for immediate retry.", error: null as string | null });
   }
 
   // 6. Delete Background Job
   if (intent === "delete_job" && jobId) {
     await db.job.delete({ where: { id: jobId } });
-    return json({ success: "Job removed from queue." });
+    return json({ success: "Job removed from queue.", error: null as string | null });
   }
 
   // 7. Purge Completed Jobs
@@ -196,10 +198,10 @@ export async function action({ request }: ActionFunctionArgs) {
     const res = await db.job.deleteMany({
       where: { status: "COMPLETED" },
     });
-    return json({ success: `Purged ${res.count} completed jobs from history.` });
+    return json({ success: `Purged ${res.count} completed jobs from history.`, error: null as string | null });
   }
 
-  return json({ error: "Unknown action" }, { status: 400 });
+  return json({ success: null as string | null, error: "Unknown action" }, { status: 400 });
 }
 
 export default function SuperAdminDashboard() {

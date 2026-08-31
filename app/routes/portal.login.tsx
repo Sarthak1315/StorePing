@@ -37,7 +37,7 @@ export async function action({ request }: ActionFunctionArgs) {
   // Intent 1: Regular Email/Password Login
   if (intent === "login") {
     if (!email || !password) {
-      return json({ error: "Please provide both email and password." }, { status: 400 });
+      return json({ success: null as string | null, error: "Please provide both email and password." }, { status: 400 });
     }
 
     const user = await db.user.findUnique({
@@ -46,12 +46,12 @@ export async function action({ request }: ActionFunctionArgs) {
     });
 
     if (!user) {
-      return json({ error: "Invalid email or password." }, { status: 401 });
+      return json({ success: null as string | null, error: "Invalid email or password." }, { status: 401 });
     }
 
     const isValid = verifyPassword(password, user.passwordHash);
     if (!isValid) {
-      return json({ error: "Invalid email or password." }, { status: 401 });
+      return json({ success: null as string | null, error: "Invalid email or password." }, { status: 401 });
     }
 
     // Check approval status (Super Admin bypasses check)
@@ -59,6 +59,7 @@ export async function action({ request }: ActionFunctionArgs) {
       if (user.approvalStatus === "PENDING") {
         return json(
           {
+            success: null as string | null,
             error: "⏳ Account Pending Approval: Your registration request is currently waiting for Super Admin approval. You will be able to log in once approved.",
           },
           { status: 403 }
@@ -68,6 +69,7 @@ export async function action({ request }: ActionFunctionArgs) {
       if (user.approvalStatus === "REJECTED") {
         return json(
           {
+            success: null as string | null,
             error: "❌ Account Request Rejected: Please contact the Super Admin at admin@everonlab.in for assistance.",
           },
           { status: 403 }
@@ -77,6 +79,7 @@ export async function action({ request }: ActionFunctionArgs) {
       if (!user.isActive) {
         return json(
           {
+            success: null as string | null,
             error: "🔒 Account Inactive: Your account has been suspended or deactivated. Contact your administrator.",
           },
           { status: 403 }
@@ -100,11 +103,11 @@ export async function action({ request }: ActionFunctionArgs) {
     const name = (formData.get("name") as string)?.trim() || "Store Admin";
 
     if (!shop || !email || !password) {
-      return json({ error: "All fields are required to setup the store admin account." }, { status: 400 });
+      return json({ success: null as string | null, error: "All fields are required to setup the store admin account." }, { status: 400 });
     }
 
     if (password.length < 6) {
-      return json({ error: "Password must be at least 6 characters long." }, { status: 400 });
+      return json({ success: null as string | null, error: "Password must be at least 6 characters long." }, { status: 400 });
     }
 
     // Find the installed merchant record
@@ -115,6 +118,7 @@ export async function action({ request }: ActionFunctionArgs) {
     if (!merchant) {
       return json(
         {
+          success: null as string | null,
           error: `Store "${shop}" was not found. Please install StorePing on your Shopify store first.`,
         },
         { status: 404 }
@@ -129,6 +133,7 @@ export async function action({ request }: ActionFunctionArgs) {
     if (existingUser) {
       return json(
         {
+          success: null as string | null,
           error: "An account with this email already exists. Please log in directly.",
         },
         { status: 400 }
@@ -150,10 +155,11 @@ export async function action({ request }: ActionFunctionArgs) {
 
     return json({
       success: "🎉 Registration request submitted! Your account is now pending Super Admin approval. Once approved, you will be able to log in with your email and password.",
+      error: null as string | null,
     });
   }
 
-  return json({ error: "Invalid form submission." }, { status: 400 });
+  return json({ success: null as string | null, error: "Invalid form submission." }, { status: 400 });
 }
 
 export default function PortalLoginPage() {
