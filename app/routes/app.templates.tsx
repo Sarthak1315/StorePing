@@ -97,6 +97,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const interpolatedBody = interpolateVariables(bodyText, sampleVariables);
     const interpolatedHeader = interpolateVariables(headerText, sampleVariables);
+    const interpolatedFooter = interpolateVariables(footerText, sampleVariables);
     const interpolatedBtnUrl = interpolateVariables(buttonUrl, sampleVariables);
 
     // Default 3 buttons if multi-button
@@ -119,7 +120,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         headerType: headerType !== "NONE" ? headerType : null,
         headerText: headerType === "TEXT" ? interpolatedHeader : null,
         headerMediaUrl: headerType === "IMAGE" ? headerMediaUrl : null,
-        footerText: footerText || `${merchant.name || shop} • 1-Click Verification`,
+        footerText: interpolatedFooter || undefined,
         buttonType: buttonType !== "NONE" ? buttonType : null,
         buttonText: buttonText || null,
         buttonUrl: interpolatedBtnUrl || null,
