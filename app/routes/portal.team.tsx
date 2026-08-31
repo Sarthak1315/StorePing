@@ -101,16 +101,17 @@ export default function PortalTeam() {
   const isOwner = user.role === "OWNER";
 
   return (
-    <div className="p-6 lg:p-10 space-y-8 max-w-6xl mx-auto w-full">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl lg:text-3xl font-extrabold text-white tracking-tight">
-          Organization Team & Permissions
-        </h1>
-        <p className="text-sm text-slate-400 mt-1">
-          Manage support agents, managers, and role-based permissions for {user.merchant.shop}
-        </p>
-      </div>
+    <div className="flex-1 overflow-y-auto p-6 lg:p-10 w-full">
+      <div className="max-w-6xl mx-auto space-y-8">
+        {/* Header */}
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-extrabold text-white tracking-tight">
+            Organization Team & Permissions
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Manage support agents, managers, and role-based permissions for {user.merchant.shop}
+          </p>
+        </div>
 
       {actionData?.success && (
         <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
@@ -286,5 +287,6 @@ export default function PortalTeam() {
         </div>
       </div>
     </div>
-  );
+  </div>
+);
 }

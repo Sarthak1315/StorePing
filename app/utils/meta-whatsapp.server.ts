@@ -267,6 +267,15 @@ export interface SendWhatsAppMessageOptions {
   templateParameters?: string[];
   headerType?: string | null;
   headerText?: string | null;
+  mediaUrl?: string | null;
+  mediaId?: string | null;
+  fileName?: string | null;
+  mediaType?: "IMAGE" | "VIDEO" | "DOCUMENT" | "AUDIO" | null;
+  templateName?: string | null;
+  templateLanguage?: string;
+  templateParameters?: string[];
+  headerType?: string | null;
+  headerText?: string | null;
   headerMediaUrl?: string | null;
   footerText?: string | null;
   buttonType?: string | null;
@@ -275,6 +284,54 @@ export interface SendWhatsAppMessageOptions {
   buttons?: Array<{ id: string; text?: string; title?: string; type?: string; url?: string }>;
   senderRole?: "BOT" | "MERCHANT";
   isInsideCSW?: boolean;
+}
+
+/**
+ * Uploads a binary file directly from the user's computer to Meta's WhatsApp Media API.
+ * Returns the Meta mediaId which can be delivered directly in WhatsApp chat.
+ */
+export async function uploadMediaToMeta(
+  merchantId: string,
+  {
+    fileBuffer,
+    fileName,
+    mimeType,
+  }: {
+    fileBuffer: Buffer;
+    fileName: string;
+    mimeType: string;
+  }
+): Promise<{ mediaId: string }> {
+  const merchant = await db.merchant.findUnique({ where: { id: merchantId } });
+  if (!merchant || !merchant.phoneNumberId || !merchant.waAccessToken) {
+    throw new Error("Merchant WhatsApp account not connected or credentials missing.");
+  }
+
+  const plainAccessToken = decryptToken(merchant.waAccessToken);
+  const appSecretProof = generateAppSecretProof(plainAccessToken);
+
+  const form = new FormData();
+  const blob = new Blob([fileBuffer], { type: mimeType });
+  form.append("file", blob, fileName);
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mimeType);
+
+  const endpoint = `${META_BASE_URL}/${merchant.phoneNumberId}/media?appsecret_proof=${appSecretProof}`;
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${plainAccessToken}`,
+    },
+    body: form,
+  });
+
+  const data = (await res.json()) as any;
+  if (!res.ok || data.error) {
+    throw new Error(data.error?.message || "Failed to upload file to WhatsApp Cloud API.");
+  }
+
+  return { mediaId: data.id };
 }
 
 /**
@@ -289,6 +346,8 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     eventType,
     bodyText,
     mediaUrl,
+    mediaId,
+    fileName,
     mediaType,
     templateName,
     templateLanguage = "en_US",
@@ -356,38 +415,54 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
   // Build Meta Cloud API Payload
   let payload: any;
 
-  if (mediaUrl && mediaType === "IMAGE") {
+  if ((mediaId || mediaUrl) && mediaType === "IMAGE") {
     payload = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to: recipientPhone,
       type: "image",
-      image: {
-        link: mediaUrl,
-        ...(bodyText ? { caption: bodyText } : {}),
-      },
+      image: mediaId
+        ? {
+            id: mediaId,
+            ...(bodyText ? { caption: bodyText } : {}),
+          }
+        : {
+            link: mediaUrl,
+            ...(bodyText ? { caption: bodyText } : {}),
+          },
     };
-  } else if (mediaUrl && mediaType === "VIDEO") {
+  } else if ((mediaId || mediaUrl) && mediaType === "VIDEO") {
     payload = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to: recipientPhone,
       type: "video",
-      video: {
-        link: mediaUrl,
-        ...(bodyText ? { caption: bodyText } : {}),
-      },
+      video: mediaId
+        ? {
+            id: mediaId,
+            ...(bodyText ? { caption: bodyText } : {}),
+          }
+        : {
+            link: mediaUrl,
+            ...(bodyText ? { caption: bodyText } : {}),
+          },
     };
-  } else if (mediaUrl && mediaType === "DOCUMENT") {
+  } else if ((mediaId || mediaUrl) && mediaType === "DOCUMENT") {
     payload = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to: recipientPhone,
       type: "document",
-      document: {
-        link: mediaUrl,
-        filename: bodyText || "Attachment.pdf",
-      },
+      document: mediaId
+        ? {
+            id: mediaId,
+            filename: fileName || bodyText || "Attachment.pdf",
+            ...(bodyText && fileName ? { caption: bodyText } : {}),
+          }
+        : {
+            link: mediaUrl,
+            filename: fileName || bodyText || "Attachment.pdf",
+          },
     };
   } else if (templateName) {
     // Official Meta Template Message (Delivers to ANY customer worldwide outside 24h CSW)

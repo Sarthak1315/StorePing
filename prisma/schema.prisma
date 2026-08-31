@@ -310,6 +310,7 @@ model User {
   role           String    @default("AGENT") // SUPER_ADMIN, OWNER, MANAGER, AGENT
   avatarUrl      String?
   isActive       Boolean   @default(true)
+  approvalStatus String    @default("APPROVED") // PENDING, APPROVED, REJECTED
   lastLoginAt    DateTime?
   
   createdAt      DateTime  @default(now())

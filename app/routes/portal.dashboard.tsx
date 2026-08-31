@@ -108,8 +108,8 @@ export default function PortalDashboard() {
   const usagePercentage = Math.min(100, Math.round((merchant.dailySentCount / tierLimit) * 100));
 
   return (
-    <div className="p-6 lg:p-10 space-y-8 max-w-7xl mx-auto w-full">
-      {/* Top Welcome Header */}
+    <div className="flex-1 overflow-y-auto p-6 lg:p-10 w-full">
+      <div className="max-w-7xl mx-auto space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl lg:text-3xl font-extrabold text-white tracking-tight">
@@ -364,5 +364,6 @@ export default function PortalDashboard() {
         </div>
       </div>
     </div>
-  );
+  </div>
+);
 }

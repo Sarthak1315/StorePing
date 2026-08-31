@@ -45,7 +45,7 @@ export async function action({ request }: ActionFunctionArgs) {
       include: { merchant: true },
     });
 
-    if (!user || !user.isActive) {
+    if (!user) {
       return json({ error: "Invalid email or password." }, { status: 401 });
     }
 
@@ -54,17 +54,47 @@ export async function action({ request }: ActionFunctionArgs) {
       return json({ error: "Invalid email or password." }, { status: 401 });
     }
 
+    // Check approval status (Super Admin bypasses check)
+    if (user.role !== "SUPER_ADMIN") {
+      if (user.approvalStatus === "PENDING") {
+        return json(
+          {
+            error: "⏳ Account Pending Approval: Your registration request is currently waiting for Super Admin approval. You will be able to log in once approved.",
+          },
+          { status: 403 }
+        );
+      }
+
+      if (user.approvalStatus === "REJECTED") {
+        return json(
+          {
+            error: "❌ Account Request Rejected: Please contact the Super Admin at admin@everonlab.in for assistance.",
+          },
+          { status: 403 }
+        );
+      }
+
+      if (!user.isActive) {
+        return json(
+          {
+            error: "🔒 Account Inactive: Your account has been suspended or deactivated. Contact your administrator.",
+          },
+          { status: 403 }
+        );
+      }
+    }
+
     // Update last login timestamp
     await db.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
     });
 
-    const targetUrl = user.role === "AGENT" ? "/portal/inbox" : returnTo;
+    const targetUrl = user.role === "SUPER_ADMIN" ? "/portal/admin" : user.role === "AGENT" ? "/portal/inbox" : returnTo;
     return createPortalSession(user.id, targetUrl);
   }
 
-  // Intent 2: First-Time Store Owner Setup (Linking an existing Merchant to a User login)
+  // Intent 2: First-Time Store Owner Setup (Pending Super Admin Approval)
   if (intent === "claim_store") {
     const shop = (formData.get("shop") as string)?.trim();
     const name = (formData.get("name") as string)?.trim() || "Store Admin";
@@ -105,19 +135,22 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    // Create OWNER user
-    const newUser = await db.user.create({
+    // Create OWNER user with PENDING approval status
+    await db.user.create({
       data: {
-        merchantId: merchant.id,
+        merchant: { connect: { id: merchant.id } },
         email,
         name,
         role: "OWNER",
+        approvalStatus: "PENDING",
+        isActive: false, // Remains inactive until Super Admin approves
         passwordHash: hashPassword(password),
-        lastLoginAt: new Date(),
       },
     });
 
-    return createPortalSession(newUser.id, "/portal/dashboard");
+    return json({
+      success: "🎉 Registration request submitted! Your account is now pending Super Admin approval. Once approved, you will be able to log in with your email and password.",
+    });
   }
 
   return json({ error: "Invalid form submission." }, { status: 400 });
@@ -150,6 +183,12 @@ export default function PortalLoginPage() {
 
         {/* Card Box */}
         <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-8 backdrop-blur-xl shadow-2xl shadow-black/50">
+          {actionData?.success && (
+            <div className="mb-6 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium flex items-center gap-3">
+              <span>✅</span>
+              <span>{actionData.success}</span>
+            </div>
+          )}
           {actionData?.error && (
             <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-medium flex items-center gap-3">
               <span>⚠️</span>
