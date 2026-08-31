@@ -160,7 +160,25 @@ export default function App() {
 
         <script
           dangerouslySetInnerHTML={{
-            __html: `window.__ENV__ = ${JSON.stringify(ENV)}`,
+            __html: `
+              window.__ENV__ = ${JSON.stringify(ENV)};
+              (function() {
+                function hideSplash() {
+                  var s = document.getElementById("initial-splash-loader");
+                  if (s) {
+                    s.style.opacity = "0";
+                    setTimeout(function() { s.remove(); }, 260);
+                  }
+                }
+                if (document.readyState === "complete" || document.readyState === "interactive") {
+                  setTimeout(hideSplash, 600);
+                } else {
+                  window.addEventListener("DOMContentLoaded", function() { setTimeout(hideSplash, 600); });
+                  window.addEventListener("load", function() { setTimeout(hideSplash, 300); });
+                }
+                setTimeout(hideSplash, 2500); // Failsafe timeout
+              })();
+            `,
           }}
         />
         <Outlet />
