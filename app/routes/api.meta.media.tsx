@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import db from "../db.server";
 import { decryptToken } from "../utils/encryption.server";
 import { logWarn } from "../utils/logger.server";
+import { logMetaApiCall } from "../utils/meta-audit.server";
 
 /**
  * Streaming Proxy for Meta WhatsApp Media (Images, Videos, Audio, Documents).
@@ -28,6 +29,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const plainAccessToken = decryptToken(merchant.waAccessToken);
 
+    const startTime = Date.now();
     // 2. Fetch Media metadata from Meta Graph API
     const metaRes = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, {
       headers: {
@@ -35,7 +37,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     });
 
+    const durationMs = Date.now() - startTime;
     const metaData = (await metaRes.json()) as any;
+
+    await logMetaApiCall({
+      merchantId: merchant.id,
+      endpoint: `GET /v21.0/${mediaId}`,
+      httpMethod: "GET",
+      statusCode: metaRes.status,
+      durationMs,
+      status: metaRes.ok && metaData.url ? "SUCCESS" : "FAILED",
+      metaMessageId: mediaId,
+      responseBody: metaData,
+      initiatedBy: "Media Proxy Stream",
+      errorMessage: metaData.error?.message || null,
+    });
 
     if (!metaRes.ok || metaData.error || !metaData.url) {
       await logWarn(`Failed to resolve Meta media ${mediaId}: ${metaData.error?.message || "Not found"}`, {

@@ -28,16 +28,16 @@ export async function action({ request }: ActionFunctionArgs) {
     const role = (formData.get("role") as string) || "AGENT";
 
     if (!name || !email || !password) {
-      return json({ error: "All fields are required to create a team member." }, { status: 400 });
+      return json({ success: null as string | null, error: "All fields are required to create a team member." }, { status: 400 });
     }
 
     if (password.length < 6) {
-      return json({ error: "Password must be at least 6 characters." }, { status: 400 });
+      return json({ success: null as string | null, error: "Password must be at least 6 characters." }, { status: 400 });
     }
 
     const existing = await db.user.findUnique({ where: { email } });
     if (existing) {
-      return json({ error: "A user with this email address already exists." }, { status: 400 });
+      return json({ success: null as string | null, error: "A user with this email address already exists." }, { status: 400 });
     }
 
     await db.user.create({
@@ -50,7 +50,7 @@ export async function action({ request }: ActionFunctionArgs) {
       },
     });
 
-    return json({ success: `Added ${name} as ${role} successfully.` });
+    return json({ success: `Added ${name} as ${role} successfully.`, error: null as string | null });
   }
 
   // 2. Toggle Active / Inactive Status
@@ -60,7 +60,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     // Prevent deactivating oneself
     if (targetUserId === user.id) {
-      return json({ error: "You cannot deactivate your own account." }, { status: 400 });
+      return json({ success: null as string | null, error: "You cannot deactivate your own account." }, { status: 400 });
     }
 
     await db.user.update({
@@ -68,28 +68,28 @@ export async function action({ request }: ActionFunctionArgs) {
       data: { isActive: !currentStatus },
     });
 
-    return json({ success: "User status updated." });
+    return json({ success: "User status updated.", error: null as string | null });
   }
 
   // 3. Delete Team Member
   if (intent === "delete_member") {
     if (user.role !== "OWNER") {
-      return json({ error: "Only the Store Owner can delete team members." }, { status: 403 });
+      return json({ success: null as string | null, error: "Only the Store Owner can delete team members." }, { status: 403 });
     }
 
     const targetUserId = formData.get("userId") as string;
     if (targetUserId === user.id) {
-      return json({ error: "You cannot delete your own account." }, { status: 400 });
+      return json({ success: null as string | null, error: "You cannot delete your own account." }, { status: 400 });
     }
 
     await db.user.delete({
       where: { id: targetUserId },
     });
 
-    return json({ success: "Team member removed." });
+    return json({ success: "Team member removed.", error: null as string | null });
   }
 
-  return json({ error: "Unknown action" }, { status: 400 });
+  return json({ success: null as string | null, error: "Unknown action" }, { status: 400 });
 }
 
 export default function PortalTeam() {

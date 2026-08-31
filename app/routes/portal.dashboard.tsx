@@ -62,7 +62,7 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "test_whatsapp") {
     const testPhone = (formData.get("testPhone") as string)?.replace(/\D/g, "");
     if (!testPhone) {
-      return json({ testError: "Please enter a valid phone number with country code." }, { status: 400 });
+      return json({ testSuccess: null as string | null, testError: "Please enter a valid phone number with country code.", error: null as string | null }, { status: 400 });
     }
 
     try {
@@ -79,16 +79,16 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
       if (result.success) {
-        return json({ testSuccess: `Test message dispatched successfully to +${testPhone} (Message ID: ${result.messageId})` });
+        return json({ testSuccess: `Test message dispatched successfully to +${testPhone} (Message ID: ${result.messageId})`, testError: null as string | null, error: null as string | null });
       } else {
-        return json({ testError: result.error || "Failed to dispatch test message." }, { status: 400 });
+        return json({ testSuccess: null as string | null, testError: result.error || "Failed to dispatch test message.", error: null as string | null }, { status: 400 });
       }
     } catch (err: any) {
-      return json({ testError: err.message || "An unexpected error occurred." }, { status: 500 });
+      return json({ testSuccess: null as string | null, testError: err.message || "An unexpected error occurred.", error: null as string | null }, { status: 500 });
     }
   }
 
-  return json({ error: "Unknown action" }, { status: 400 });
+  return json({ testSuccess: null as string | null, testError: null as string | null, error: "Unknown action" }, { status: 400 });
 }
 
 export default function PortalDashboard() {

@@ -10,8 +10,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireRole(request, ["SUPER_ADMIN"]);
 
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-  // Run all global platform telemetry queries in parallel for instant sub-200ms response
+  // Run all global platform telemetry and API audit queries in parallel
   const [
     pendingUsers,
     allStores,
@@ -22,6 +23,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     totalOrderConfirmations,
     callsInLastHour,
     recentJobs,
+    apiLogs,
+    totalApiCalls,
+    apiCalls24h,
+    rateLimitedCalls,
+    failedApiCalls,
   ] = await Promise.all([
     db.user.findMany({
       where: { approvalStatus: "PENDING" },
@@ -41,6 +47,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             conversations: true,
             orderConfirmations: true,
             cartRecoveries: true,
+            apiLogs: true,
           },
         },
       },
@@ -58,7 +65,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     db.conversation.count(),
     db.cartRecovery.count(),
     db.orderConfirmation.count(),
-    db.messageLog.count({
+    db.metaApiLog.count({
       where: {
         createdAt: { gte: oneHourAgo },
       },
@@ -71,6 +78,25 @@ export async function loader({ request }: LoaderFunctionArgs) {
           select: { shop: true },
         },
       },
+    }),
+    db.metaApiLog.findMany({
+      take: 100,
+      orderBy: { createdAt: "desc" },
+      include: {
+        merchant: {
+          select: { shop: true, name: true },
+        },
+      },
+    }),
+    db.metaApiLog.count(),
+    db.metaApiLog.count({
+      where: { createdAt: { gte: twentyFourHoursAgo } },
+    }),
+    db.metaApiLog.count({
+      where: { status: "RATE_LIMITED" },
+    }),
+    db.metaApiLog.count({
+      where: { status: "FAILED" },
     }),
   ]);
 
@@ -86,12 +112,24 @@ export async function loader({ request }: LoaderFunctionArgs) {
   );
   const rateLimitRemainingPercent = Math.max(0, 100 - rateLimitUsedPercent);
 
+  // Success rate calculation
+  const successCount = totalApiCalls - failedApiCalls;
+  const apiSuccessRate = totalApiCalls > 0 ? Math.round((successCount / totalApiCalls) * 100) : 100;
+
   return json({
     user,
     pendingUsers,
     allStores,
     allUsers,
     recentJobs,
+    apiLogs,
+    apiStats: {
+      totalApiCalls,
+      apiCalls24h,
+      rateLimitedCalls,
+      failedApiCalls,
+      apiSuccessRate,
+    },
     rateLimitStats: {
       appId: "1083822394035933",
       appName: "StorePing",
@@ -201,11 +239,17 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ success: `Purged ${res.count} completed jobs from history.`, error: null as string | null });
   }
 
+  // 8. Purge API Logs
+  if (intent === "purge_api_logs") {
+    const res = await db.metaApiLog.deleteMany({});
+    return json({ success: `Cleared ${res.count} Meta API audit log entries.`, error: null as string | null });
+  }
+
   return json({ success: null as string | null, error: "Unknown action" }, { status: 400 });
 }
 
 export default function SuperAdminDashboard() {
-  const { user, pendingUsers, allStores, allUsers, recentJobs, rateLimitStats, stats } =
+  const { user, pendingUsers, allStores, allUsers, recentJobs, apiLogs, apiStats, rateLimitStats, stats } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -213,7 +257,7 @@ export default function SuperAdminDashboard() {
 
   // Tab State
   const [activeTab, setActiveTab] = useState<
-    "OVERVIEW" | "APPROVALS" | "STORES" | "USERS" | "JOBS"
+    "OVERVIEW" | "APPROVALS" | "STORES" | "USERS" | "JOBS" | "API_LOGS"
   >("OVERVIEW");
 
   // Filter & Search States
@@ -223,6 +267,12 @@ export default function SuperAdminDashboard() {
 
   const [storeSearch, setStoreSearch] = useState("");
   const [showRateLimitDetails, setShowRateLimitDetails] = useState(false);
+
+  // API Logs Filter States
+  const [apiSearch, setApiSearch] = useState("");
+  const [apiStatusFilter, setApiStatusFilter] = useState("ALL");
+  const [apiMethodFilter, setApiMethodFilter] = useState("ALL");
+  const [selectedApiLog, setSelectedApiLog] = useState<(typeof apiLogs)[number] | null>(null);
 
   // Filtered Users
   const filteredUsers = allUsers.filter((u) => {
@@ -254,6 +304,23 @@ export default function SuperAdminDashboard() {
     );
   });
 
+  // Filtered API Logs
+  const filteredApiLogs = apiLogs.filter((log) => {
+    const query = apiSearch.toLowerCase();
+    const matchesSearch =
+      log.endpoint.toLowerCase().includes(query) ||
+      (log.initiatedBy && log.initiatedBy.toLowerCase().includes(query)) ||
+      (log.merchant?.shop && log.merchant.shop.toLowerCase().includes(query)) ||
+      (log.metaMessageId && log.metaMessageId.toLowerCase().includes(query)) ||
+      (log.errorMessage && log.errorMessage.toLowerCase().includes(query)) ||
+      (log.statusCode && log.statusCode.toString().includes(query));
+
+    const matchesStatus = apiStatusFilter === "ALL" || log.status === apiStatusFilter;
+    const matchesMethod = apiMethodFilter === "ALL" || log.httpMethod === apiMethodFilter;
+
+    return matchesSearch && matchesStatus && matchesMethod;
+  });
+
   return (
     <div className="flex-1 overflow-y-auto p-6 lg:p-10 w-full bg-slate-950 text-slate-100">
       <div className="max-w-7xl mx-auto space-y-7">
@@ -273,7 +340,7 @@ export default function SuperAdminDashboard() {
               Super Admin Control Panel
             </h1>
             <p className="text-sm text-slate-400 mt-1">
-              Global multi-tenant governance, Meta Application Rate Limit monitoring, store directory, and user approvals.
+              Global multi-tenant governance, Meta API audit logs, rate limit telemetry, and user management.
             </p>
           </div>
 
@@ -316,6 +383,22 @@ export default function SuperAdminDashboard() {
           >
             <span>📊</span>
             <span>Overview & Rate Limits</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("API_LOGS")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+              activeTab === "API_LOGS"
+                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/30"
+                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <span>📡</span>
+            <span>Meta API Logs & Telemetry</span>
+            <span className="px-1.5 py-0.5 bg-blue-500/30 text-blue-300 text-[10px] font-bold rounded-full font-mono">
+              {apiStats.totalApiCalls}
+            </span>
           </button>
 
           <button
@@ -517,6 +600,18 @@ export default function SuperAdminDashboard() {
 
               <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Meta API Total Calls
+                </div>
+                <div className="text-2xl font-extrabold text-blue-400 mt-1.5 font-mono">
+                  {apiStats.totalApiCalls}
+                </div>
+                <div className="text-[10px] text-emerald-400 mt-1">
+                  {apiStats.apiSuccessRate}% Success Rate
+                </div>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                   2-Way Support Chats
                 </div>
                 <div className="text-2xl font-extrabold text-white mt-1.5 font-mono">
@@ -558,23 +653,283 @@ export default function SuperAdminDashboard() {
                 </div>
                 <div className="text-[10px] text-slate-400 mt-1">Store Owners & Staff</div>
               </div>
-
-              <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  Queue Health
-                </div>
-                <div className="text-2xl font-extrabold text-emerald-400 mt-1.5 font-mono">
-                  {recentJobs.filter((j) => j.status === "PENDING" || j.status === "PROCESSING").length} Pending
-                </div>
-                <div className="text-[10px] text-slate-400 mt-1">
-                  PostgreSQL Async Worker
-                </div>
-              </div>
             </div>
           </div>
         )}
 
-        {/* TAB 2: PENDING APPROVALS */}
+        {/* TAB 2: META API LOGS & TELEMETRY */}
+        {activeTab === "API_LOGS" && (
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5">
+            {/* Header & Metrics */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <span>📡 Meta Cloud API Audit Log & Telemetry</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">
+                    {filteredApiLogs.length} of {apiStats.totalApiCalls}
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Complete timestamped audit trail of all outbound Meta API requests, latency, rate limit headers, and initiators.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Form method="post" onSubmit={(e) => { if (!confirm("Clear all Meta API audit logs?")) e.preventDefault(); }}>
+                  <input type="hidden" name="intent" value="purge_api_logs" />
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-semibold transition"
+                  >
+                    🧹 Clear Audit Log
+                  </button>
+                </Form>
+              </div>
+            </div>
+
+            {/* Quick Metrics Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800/80">
+                <div className="text-[10px] font-bold text-slate-400 uppercase">24-Hour Calls</div>
+                <div className="text-lg font-extrabold text-white font-mono mt-0.5">{apiStats.apiCalls24h}</div>
+              </div>
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800/80">
+                <div className="text-[10px] font-bold text-slate-400 uppercase">Success Rate</div>
+                <div className="text-lg font-extrabold text-emerald-400 font-mono mt-0.5">{apiStats.apiSuccessRate}%</div>
+              </div>
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800/80">
+                <div className="text-[10px] font-bold text-slate-400 uppercase">Rate Limited (429)</div>
+                <div className="text-lg font-extrabold text-amber-400 font-mono mt-0.5">{apiStats.rateLimitedCalls}</div>
+              </div>
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800/80">
+                <div className="text-[10px] font-bold text-slate-400 uppercase">Failed Calls</div>
+                <div className="text-lg font-extrabold text-red-400 font-mono mt-0.5">{apiStats.failedApiCalls}</div>
+              </div>
+            </div>
+
+            {/* Search & Filter Bar */}
+            <div className="flex flex-wrap items-center gap-2.5 pt-2">
+              <select
+                value={apiStatusFilter}
+                onChange={(e) => setApiStatusFilter(e.target.value)}
+                className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-purple-500"
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="SUCCESS">✅ SUCCESS</option>
+                <option value="RATE_LIMITED">⚠️ RATE_LIMITED (429)</option>
+                <option value="FAILED">❌ FAILED</option>
+              </select>
+
+              <select
+                value={apiMethodFilter}
+                onChange={(e) => setApiMethodFilter(e.target.value)}
+                className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-purple-500"
+              >
+                <option value="ALL">All HTTP Methods</option>
+                <option value="POST">POST</option>
+                <option value="GET">GET</option>
+                <option value="DELETE">DELETE</option>
+              </select>
+
+              <div className="relative flex-1 min-w-[240px]">
+                <input
+                  type="text"
+                  value={apiSearch}
+                  onChange={(e) => setApiSearch(e.target.value)}
+                  placeholder="Search endpoint, user, message ID, status code, error..."
+                  className="w-full pl-8 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                />
+                <span className="absolute left-2.5 top-2.5 text-xs text-slate-500">🔍</span>
+              </div>
+            </div>
+
+            {/* Logs Table */}
+            {filteredApiLogs.length === 0 ? (
+              <div className="p-12 text-center bg-slate-950/60 rounded-xl border border-slate-800/80 text-xs text-slate-500">
+                No Meta API audit records matching filter criteria.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 font-semibold">
+                      <th className="pb-3">Timestamp (UTC / Local)</th>
+                      <th className="pb-3">Initiated By / Trigger</th>
+                      <th className="pb-3">Store</th>
+                      <th className="pb-3">Method & Endpoint</th>
+                      <th className="pb-3">Status</th>
+                      <th className="pb-3">Latency</th>
+                      <th className="pb-3 text-right">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                    {filteredApiLogs.map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-800/30 transition">
+                        <td className="py-3 text-slate-400 whitespace-nowrap">
+                          <div>{new Date(log.createdAt).toLocaleDateString()}</div>
+                          <div className="text-[10px] text-slate-500">
+                            {new Date(log.createdAt).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            })}
+                          </div>
+                        </td>
+                        <td className="py-3 text-white font-sans font-semibold">
+                          {log.initiatedBy || "System"}
+                        </td>
+                        <td className="py-3 text-slate-300 font-sans">
+                          {log.merchant?.shop || "Global"}
+                        </td>
+                        <td className="py-3">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 ${
+                            log.httpMethod === "POST"
+                              ? "bg-blue-500/20 text-blue-300"
+                              : "bg-emerald-500/20 text-emerald-300"
+                          }`}>
+                            {log.httpMethod}
+                          </span>
+                          <span className="text-purple-300">{log.endpoint}</span>
+                        </td>
+                        <td className="py-3">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            log.status === "SUCCESS"
+                              ? "bg-emerald-500/20 text-emerald-300"
+                              : log.status === "RATE_LIMITED"
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-red-500/20 text-red-300"
+                          }`}>
+                            {log.statusCode || (log.status === "SUCCESS" ? 200 : 500)} {log.status}
+                          </span>
+                        </td>
+                        <td className="py-3 text-slate-400">
+                          {log.durationMs ? `${log.durationMs}ms` : "—"}
+                        </td>
+                        <td className="py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedApiLog(log)}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] font-sans font-semibold transition"
+                          >
+                            Inspect 🔍
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Inspect Payload Modal */}
+            {selectedApiLog && (
+              <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">📡</span>
+                      <h3 className="font-bold text-white text-sm">
+                        Meta API Transaction Inspection
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedApiLog(null)}
+                      className="text-slate-400 hover:text-white text-base"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px] font-mono">
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                      <span className="text-slate-500 block text-[10px]">TIMESTAMP</span>
+                      <span className="text-white font-bold">{new Date(selectedApiLog.createdAt).toLocaleString()}</span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                      <span className="text-slate-500 block text-[10px]">INITIATED BY</span>
+                      <span className="text-white font-bold">{selectedApiLog.initiatedBy || "System"}</span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                      <span className="text-slate-500 block text-[10px]">STATUS</span>
+                      <span className="text-emerald-400 font-bold">{selectedApiLog.statusCode} ({selectedApiLog.status})</span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                      <span className="text-slate-500 block text-[10px]">LATENCY</span>
+                      <span className="text-teal-400 font-bold">{selectedApiLog.durationMs}ms</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase text-slate-400 mb-1">
+                      Endpoint
+                    </label>
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-purple-300">
+                      {selectedApiLog.httpMethod} {selectedApiLog.endpoint}
+                    </div>
+                  </div>
+
+                  {selectedApiLog.rateLimitUsage && (
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase text-slate-400 mb-1">
+                        Rate Limit Header Usage
+                      </label>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-amber-300">
+                        {selectedApiLog.rateLimitUsage}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedApiLog.requestPayload && (
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase text-slate-400 mb-1">
+                        Sanitized Request Payload
+                      </label>
+                      <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-200 overflow-x-auto max-h-48">
+                        {selectedApiLog.requestPayload}
+                      </pre>
+                    </div>
+                  )}
+
+                  {selectedApiLog.responseBody && (
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase text-slate-400 mb-1">
+                        Meta API Response Body
+                      </label>
+                      <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-200 overflow-x-auto max-h-48">
+                        {selectedApiLog.responseBody}
+                      </pre>
+                    </div>
+                  )}
+
+                  {selectedApiLog.errorMessage && (
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase text-red-400 mb-1">
+                        Error Details
+                      </label>
+                      <div className="p-2.5 rounded-lg bg-red-950/30 border border-red-800/40 font-mono text-xs text-red-300">
+                        {selectedApiLog.errorMessage}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedApiLog(null)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold"
+                    >
+                      Close Inspector
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: PENDING APPROVALS */}
         {activeTab === "APPROVALS" && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
@@ -662,7 +1017,7 @@ export default function SuperAdminDashboard() {
           </div>
         )}
 
-        {/* TAB 3: STORES DIRECTORY */}
+        {/* TAB 4: STORES DIRECTORY */}
         {activeTab === "STORES" && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -755,7 +1110,7 @@ export default function SuperAdminDashboard() {
           </div>
         )}
 
-        {/* TAB 4: USER DIRECTORY (WITH LIVE SEARCH & FILTERING) */}
+        {/* TAB 5: USER DIRECTORY (WITH LIVE SEARCH & FILTERING) */}
         {activeTab === "USERS" && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -773,7 +1128,6 @@ export default function SuperAdminDashboard() {
 
               {/* Filters & Search Controls */}
               <div className="flex flex-wrap items-center gap-2.5">
-                {/* Role Filter */}
                 <select
                   value={userRoleFilter}
                   onChange={(e) => setUserRoleFilter(e.target.value)}
@@ -786,7 +1140,6 @@ export default function SuperAdminDashboard() {
                   <option value="AGENT">Support Agent</option>
                 </select>
 
-                {/* Status Filter */}
                 <select
                   value={userStatusFilter}
                   onChange={(e) => setUserStatusFilter(e.target.value)}
@@ -799,7 +1152,6 @@ export default function SuperAdminDashboard() {
                   <option value="INACTIVE">Inactive</option>
                 </select>
 
-                {/* Search Bar */}
                 <div className="relative w-full sm:w-64">
                   <input
                     type="text"
@@ -931,7 +1283,7 @@ export default function SuperAdminDashboard() {
           </div>
         )}
 
-        {/* TAB 5: BACKGROUND JOBS & QUEUE TELEMETRY */}
+        {/* TAB 6: BACKGROUND JOBS & QUEUE TELEMETRY */}
         {activeTab === "JOBS" && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

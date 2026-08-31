@@ -94,6 +94,7 @@ model Merchant {
   orderConfirmations     OrderConfirmation[]
   users                  User[]
   invitations            TeamInvitation[]
+  apiLogs                MetaApiLog[]
 
   @@map("storeping_Merchant")
 }
@@ -338,4 +339,31 @@ model TeamInvitation {
   @@index([merchantId])
   @@index([token])
   @@map("storeping_TeamInvitation")
+}
+
+// 12. Meta Graph & WhatsApp Cloud API Audit Log
+model MetaApiLog {
+  id             String    @id @default(uuid())
+  merchantId     String?
+  merchant       Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  endpoint       String    // e.g. "POST /v21.0/{phoneNumberId}/messages"
+  httpMethod     String    // POST, GET, DELETE
+  statusCode     Int?      // 200, 400, 401, 500, etc.
+  durationMs     Int?      // Request duration in ms
+  status         String    @default("SUCCESS") // SUCCESS, FAILED, RATE_LIMITED
+  metaMessageId  String?   // Meta WAMID or Media ID returned
+  requestPayload String?   @db.Text // Sanitized JSON payload
+  responseBody   String?   @db.Text // Meta JSON response / error details
+  rateLimitUsage String?   // x-business-use-case-usage or x-app-usage header
+  initiatedBy    String?   // User email, "SYSTEM", "CRON_JOB", "WEBHOOK"
+  ipAddress      String?
+  errorMessage   String?   @db.Text
+  
+  createdAt      DateTime  @default(now())
+
+  @@index([merchantId, createdAt])
+  @@index([status])
+  @@index([endpoint])
+  @@index([createdAt])
+  @@map("storeping_MetaApiLog")
 }

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import db from "../db.server";
 import { decryptToken } from "./encryption.server";
 import { logInfo, logWarn, logError } from "./logger.server";
+import { logMetaApiCall } from "./meta-audit.server";
 import { maskPhoneNumber } from "./phone.utils";
 
 const META_GRAPH_VERSION = "v21.0";
@@ -23,6 +24,7 @@ export async function registerPhoneNumber(phoneNumberId: string, accessToken: st
   const appSecretProof = generateAppSecretProof(accessToken);
   const endpoint = `${META_BASE_URL}/${phoneNumberId}/register?appsecret_proof=${appSecretProof}`;
 
+  const startTime = Date.now();
   const res = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -35,7 +37,21 @@ export async function registerPhoneNumber(phoneNumberId: string, accessToken: st
     }),
   });
 
+  const durationMs = Date.now() - startTime;
   const data = (await res.json()) as any;
+
+  await logMetaApiCall({
+    endpoint: `POST /${META_GRAPH_VERSION}/${phoneNumberId}/register`,
+    httpMethod: "POST",
+    statusCode: res.status,
+    durationMs,
+    status: res.ok ? "SUCCESS" : "FAILED",
+    requestPayload: { messaging_product: "whatsapp" },
+    responseBody: data,
+    initiatedBy: "Phone Number Registration",
+    errorMessage: data.error?.message || null,
+  });
+
   if (!res.ok || data.error) {
     throw new Error(data.error?.message || "Failed to register WhatsApp phone number with Meta Cloud API.");
   }
@@ -56,6 +72,7 @@ export async function subscribeWabaToWebhooks(merchantId: string) {
 
   try {
     const endpoint = `${META_BASE_URL}/${merchant.wabaId}/subscribed_apps?appsecret_proof=${appSecretProof}`;
+    const startTime = Date.now();
     const res = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -64,7 +81,22 @@ export async function subscribeWabaToWebhooks(merchantId: string) {
       },
     });
 
+    const durationMs = Date.now() - startTime;
     const data = (await res.json()) as any;
+
+    await logMetaApiCall({
+      merchantId,
+      endpoint: `POST /${META_GRAPH_VERSION}/${merchant.wabaId}/subscribed_apps`,
+      httpMethod: "POST",
+      statusCode: res.status,
+      durationMs,
+      status: res.ok && data.success ? "SUCCESS" : "FAILED",
+      requestPayload: { wabaId: merchant.wabaId },
+      responseBody: data,
+      initiatedBy: "Webhook Subscription",
+      errorMessage: data.error?.message || null,
+    });
+
     if (data.success) {
       await logInfo(`Successfully subscribed WABA ${merchant.wabaId} to webhooks ✓`, {
         shop: merchant.shop,
@@ -237,6 +269,7 @@ export async function syncTemplateToMeta(merchantId: string, template: {
 
   const endpoint = `${META_BASE_URL}/${merchant.wabaId}/message_templates?appsecret_proof=${appSecretProof}`;
 
+  const startTime = Date.now();
   const res = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -246,7 +279,22 @@ export async function syncTemplateToMeta(merchantId: string, template: {
     body: JSON.stringify(payload),
   });
 
+  const durationMs = Date.now() - startTime;
   const data = (await res.json()) as any;
+
+  await logMetaApiCall({
+    merchantId,
+    endpoint: `POST /${META_GRAPH_VERSION}/${merchant.wabaId}/message_templates`,
+    httpMethod: "POST",
+    statusCode: res.status,
+    durationMs,
+    status: res.ok ? "SUCCESS" : "FAILED",
+    requestPayload: payload,
+    responseBody: data,
+    initiatedBy: "Template Sync / Creation",
+    errorMessage: data.error?.message || null,
+  });
+
   if (!res.ok || data.error) {
     throw new Error(data.error?.message || "Failed to create template on Meta.");
   }
@@ -304,13 +352,14 @@ export async function uploadMediaToMeta(
   const appSecretProof = generateAppSecretProof(plainAccessToken);
 
   const form = new FormData();
-  const blob = new Blob([fileBuffer], { type: mimeType });
+  const blob = new Blob([new Uint8Array(fileBuffer)], { type: mimeType });
   form.append("file", blob, fileName);
   form.append("messaging_product", "whatsapp");
   form.append("type", mimeType);
 
   const endpoint = `${META_BASE_URL}/${merchant.phoneNumberId}/media?appsecret_proof=${appSecretProof}`;
 
+  const startTime = Date.now();
   const res = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -319,7 +368,23 @@ export async function uploadMediaToMeta(
     body: form,
   });
 
+  const durationMs = Date.now() - startTime;
   const data = (await res.json()) as any;
+
+  await logMetaApiCall({
+    merchantId,
+    endpoint: `POST /${META_GRAPH_VERSION}/${merchant.phoneNumberId}/media`,
+    httpMethod: "POST",
+    statusCode: res.status,
+    durationMs,
+    status: res.ok ? "SUCCESS" : "FAILED",
+    metaMessageId: data.id || null,
+    requestPayload: { fileName, mimeType, byteLength: fileBuffer.length },
+    responseBody: data,
+    initiatedBy: "Portal User Media Upload",
+    errorMessage: data.error?.message || null,
+  });
+
   if (!res.ok || data.error) {
     throw new Error(data.error?.message || "Failed to upload file to WhatsApp Cloud API.");
   }
@@ -591,9 +656,11 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     };
   }
 
-  const endpoint = `${META_BASE_URL}/${merchant.phoneNumberId}/messages?appsecret_proof=${appSecretProof}`;
+  const phoneNumberId = merchant.phoneNumberId;
+  const endpoint = `${META_BASE_URL}/${phoneNumberId}/messages?appsecret_proof=${appSecretProof}`;
 
   async function executeSend(currentPayload: any): Promise<any> {
+    const startTime = Date.now();
     const res = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -603,7 +670,25 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       body: JSON.stringify(currentPayload),
     });
 
+    const durationMs = Date.now() - startTime;
+    const rateLimitHeader = res.headers.get("x-business-use-case-usage") || res.headers.get("x-app-usage") || null;
     const data = (await res.json()) as any;
+
+    await logMetaApiCall({
+      merchantId,
+      endpoint: `POST /${META_GRAPH_VERSION}/${phoneNumberId}/messages`,
+      httpMethod: "POST",
+      statusCode: res.status,
+      durationMs,
+      status: res.ok ? "SUCCESS" : (res.status === 429 || data.error?.code === 130429 || data.error?.code === 131056) ? "RATE_LIMITED" : "FAILED",
+      metaMessageId: data.messages?.[0]?.id || null,
+      requestPayload: currentPayload,
+      responseBody: data,
+      rateLimitUsage: rateLimitHeader,
+      initiatedBy: options.senderRole === "MERCHANT" ? "Portal Live Support Agent" : `Automation: ${eventType}`,
+      errorMessage: data.error?.message || null,
+    });
+
     return { ok: res.ok, status: res.status, data };
   }
 
