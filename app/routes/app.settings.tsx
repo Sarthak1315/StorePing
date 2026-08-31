@@ -149,7 +149,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function SettingsPage() {
-  const { merchant } = useLoaderData<typeof loader>();
+  const { shop, merchant } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
   const [testPhone, setTestPhone] = useState(merchant?.phone || "");
@@ -425,6 +425,80 @@ export default function SettingsPage() {
                       onClick={handleSaveSettings}
                     >
                       Save Preferences
+                    </Button>
+                  </InlineStack>
+                </BlockStack>
+              </Card>
+
+              {/* 3. STOREFRONT 1-CLICK WHATSAPP SUPPORT BUTTON CARD */}
+              <Card>
+                <BlockStack gap="400">
+                  <InlineStack align="space-between" blockAlign="center">
+                    <div>
+                      <Text as="h2" variant="headingMd">
+                        💬 Storefront 1-Click WhatsApp Support Button
+                      </Text>
+                      <Text as="p" tone="subdued" variant="bodySm">
+                        Floating corner button for instant customer service, order tracking, and returns.
+                      </Text>
+                    </div>
+                    <Badge tone="success">100% Free CSW (₹0.00)</Badge>
+                  </InlineStack>
+
+                  <Divider />
+
+                  <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+                    <BlockStack gap="200">
+                      <Text variant="headingXs" as="h4" tone="subdued">
+                        WHY ENABLE THIS BUTTON:
+                      </Text>
+                      <InlineStack gap="400" align="start">
+                        <div style={{ flex: 1 }}>
+                          <Text variant="bodySm" as="p" fontWeight="bold">
+                            💰 100% Free Meta Replies (₹0.00)
+                          </Text>
+                          <Text variant="bodyXs" as="p" tone="subdued">
+                            When shoppers initiate chat from the button, Meta opens the 24h Free Customer Service Window.
+                          </Text>
+                        </div>
+
+                        <div style={{ flex: 1 }}>
+                          <Text variant="bodySm" as="p" fontWeight="bold">
+                            📦 Order & Return Resolution
+                          </Text>
+                          <Text variant="bodyXs" as="p" tone="subdued">
+                            Inquiries land directly in your Live Support Inbox (/app/inbox) for agents to resolve.
+                          </Text>
+                        </div>
+
+                        <div style={{ flex: 1 }}>
+                          <Text variant="bodySm" as="p" fontWeight="bold">
+                            🎨 Theme Customizer Powered
+                          </Text>
+                          <Text variant="bodyXs" as="p" tone="subdued">
+                            Customize button position, tooltip, pre-filled text & colors live in Shopify Theme Editor.
+                          </Text>
+                        </div>
+                      </InlineStack>
+                    </BlockStack>
+                  </Box>
+
+                  <InlineStack align="space-between" blockAlign="center">
+                    <div>
+                      <Text variant="bodySm" as="p" fontWeight="bold">
+                        App Embed: StorePing WhatsApp Chat
+                      </Text>
+                      <Text variant="bodyXs" as="p" tone="subdued">
+                        Click below to open your Shopify Theme Editor and toggle the StorePing App Embed on your store.
+                      </Text>
+                    </div>
+
+                    <Button
+                      variant="primary"
+                      url={`https://admin.shopify.com/store/${shop.replace(".myshopify.com", "")}/themes/current/editor?context=apps`}
+                      external
+                    >
+                      Open Theme Customizer ↗
                     </Button>
                   </InlineStack>
                 </BlockStack>

@@ -1,0 +1,103 @@
+{% comment %}
+  StorePing - 1-Click WhatsApp Floating Support Button
+  Triggers the 100% Free 24-Hour Customer Service Window (CSW) on Meta Cloud API
+{% endcomment %}
+
+{% assign raw_phone = block.settings.phone_number | default: '' %}
+{% assign clean_phone = raw_phone | replace: '+', '' | replace: ' ', '' | replace: '-', '' | replace: '(', '' | replace: ')', '' %}
+
+{% if clean_phone != blank %}
+  {% assign custom_text = block.settings.default_message | default: 'Hi! I have a question about my order.' %}
+
+  {% if template.name == 'product' and block.settings.attach_product_context %}
+    {% capture product_info %} (Regarding: {{ product.title }} - {{ canonical_url }}){% endcapture %}
+    {% assign custom_text = custom_text | append: product_info %}
+  {% endif %}
+
+  {% assign encoded_msg = custom_text | url_encode %}
+  {% assign wa_url = 'https://wa.me/' | append: clean_phone | append: '?text=' | append: encoded_msg %}
+
+  <a
+    href="{{ wa_url }}"
+    target="_blank"
+    rel="noopener noreferrer"
+    class="storeping-wa-float storeping-pos-{{ block.settings.position | default: 'bottom-right' }}"
+    style="--storeping-bg-color: {{ block.settings.button_color | default: '#25D366' }};"
+    aria-label="Chat with Customer Support on WhatsApp"
+  >
+    {% if block.settings.tooltip_text != blank %}
+      <span class="storeping-wa-tooltip">{{ block.settings.tooltip_text | escape }}</span>
+    {% endif %}
+    
+    <div class="storeping-wa-btn {% if block.settings.pulse_animation %}storeping-pulse{% endif %}">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12.031 2C6.496 2 2 6.496 2 12.031c0 1.99.584 3.844 1.594 5.414L2.062 22l4.734-1.492a9.98 9.98 0 005.235 1.484c5.535 0 10.031-4.496 10.031-10.031S17.566 2 12.031 2zm5.797 14.18c-.242.68-1.22 1.258-1.703 1.305-.461.047-1.047.07-3.047-.75-2.555-1.047-4.18-3.664-4.305-3.836-.125-.172-1.031-1.375-1.031-2.625s.656-1.859.89-2.11c.234-.25.508-.312.68-.312.172 0 .344.008.492.016.156.008.367-.063.57.43.211.508.72 1.758.782 1.883.062.125.101.273.015.445-.086.172-.125.281-.25.43-.125.148-.266.328-.375.445-.125.125-.258.266-.11.516.149.25.657 1.086 1.415 1.765.976.868 1.797 1.141 2.054 1.266.258.125.407.11.555-.062.148-.172.633-.742.805-.992.172-.25.344-.211.578-.125.234.086 1.484.7 1.742.828.258.125.43.188.492.297.063.11.063.64-.18 1.32z"/>
+      </svg>
+    </div>
+  </a>
+{% endif %}
+
+{% schema %}
+{
+  "name": "StorePing WhatsApp Chat",
+  "target": "body",
+  "stylesheet": "whatsapp-chat.css",
+  "settings": [
+    {
+      "type": "text",
+      "id": "phone_number",
+      "label": "WhatsApp Support Number",
+      "info": "Include country code without symbols (e.g. 919374626600 for India or 15551234567 for US)",
+      "default": "919374626600"
+    },
+    {
+      "type": "select",
+      "id": "position",
+      "label": "Button Corner Position",
+      "options": [
+        {
+          "value": "bottom-right",
+          "label": "Bottom Right"
+        },
+        {
+          "value": "bottom-left",
+          "label": "Bottom Left"
+        }
+      ],
+      "default": "bottom-right"
+    },
+    {
+      "type": "text",
+      "id": "tooltip_text",
+      "label": "Hover Tooltip Text",
+      "default": "Need help? Chat with Support"
+    },
+    {
+      "type": "textarea",
+      "id": "default_message",
+      "label": "Pre-filled WhatsApp Message",
+      "info": "The default message text placed in the customer's WhatsApp chat bar.",
+      "default": "Hi! I have a question about my order / shopping on your store."
+    },
+    {
+      "type": "checkbox",
+      "id": "attach_product_context",
+      "label": "Auto-Attach Product Details",
+      "info": "When on a product page, automatically adds the product name and link to the chat.",
+      "default": true
+    },
+    {
+      "type": "color",
+      "id": "button_color",
+      "label": "Button Background Color",
+      "default": "#25D366"
+    },
+    {
+      "type": "checkbox",
+      "id": "pulse_animation",
+      "label": "Enable Attention Pulse Wave",
+      "default": true
+    }
+  ]
+}
+{% endschema %}

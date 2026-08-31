@@ -1,0 +1,130 @@
+/* StorePing - 1-Click WhatsApp Floating Support Button CSS */
+.storeping-wa-float {
+  position: fixed;
+  bottom: 24px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.storeping-wa-float.storeping-pos-right {
+  right: 24px;
+  flex-direction: row-reverse;
+}
+
+.storeping-wa-float.storeping-pos-left {
+  left: 24px;
+  flex-direction: row;
+}
+
+/* Circular WhatsApp Icon Button */
+.storeping-wa-btn {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background-color: var(--storeping-bg-color, #25D366);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(37, 211, 102, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.25s ease;
+  position: relative;
+}
+
+.storeping-wa-btn svg {
+  width: 32px;
+  height: 32px;
+  fill: #ffffff;
+  display: block;
+}
+
+.storeping-wa-float:hover .storeping-wa-btn {
+  transform: scale(1.08);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28), 0 3px 8px rgba(37, 211, 102, 0.45);
+}
+
+.storeping-wa-float:active .storeping-wa-btn {
+  transform: scale(0.95);
+}
+
+/* Subtle Attention Pulse Wave */
+.storeping-wa-btn.storeping-pulse::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  right: -4px;
+  bottom: -4px;
+  border-radius: 50%;
+  border: 2px solid var(--storeping-bg-color, #25D366);
+  opacity: 0.8;
+  animation: storeping-pulse-animation 2.2s infinite ease-out;
+  pointer-events: none;
+}
+
+@keyframes storeping-pulse-animation {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  60% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* Tooltip & Greeting Pill */
+.storeping-wa-tooltip {
+  background-color: #1e293b;
+  color: #ffffff;
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.storeping-wa-float:hover .storeping-wa-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .storeping-wa-float {
+    bottom: 20px;
+  }
+  .storeping-wa-float.storeping-pos-right {
+    right: 18px;
+  }
+  .storeping-wa-float.storeping-pos-left {
+    left: 18px;
+  }
+  .storeping-wa-btn {
+    width: 54px;
+    height: 54px;
+  }
+  .storeping-wa-btn svg {
+    width: 29px;
+    height: 29px;
+  }
+  .storeping-wa-tooltip {
+    display: none; /* Hide hover tooltip on mobile touch devices */
+  }
+}
