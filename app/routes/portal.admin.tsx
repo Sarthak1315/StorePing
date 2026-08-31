@@ -305,7 +305,7 @@ export default function SuperAdminDashboard() {
   });
 
   // Filtered API Logs
-  const filteredApiLogs = apiLogs.filter((log) => {
+  const filteredApiLogs = apiLogs.filter((log: (typeof apiLogs)[number]) => {
     const query = apiSearch.toLowerCase();
     const matchesSearch =
       log.endpoint.toLowerCase().includes(query) ||
@@ -764,7 +764,7 @@ export default function SuperAdminDashboard() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                    {filteredApiLogs.map((log) => (
+                    {filteredApiLogs.map((log: (typeof apiLogs)[number]) => (
                       <tr key={log.id} className="hover:bg-slate-800/30 transition">
                         <td className="py-3 text-slate-400 whitespace-nowrap">
                           <div>{new Date(log.createdAt).toLocaleDateString()}</div>
