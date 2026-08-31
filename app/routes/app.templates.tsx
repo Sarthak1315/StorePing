@@ -248,6 +248,8 @@ export default function TemplatesAndSimulatorPage() {
       : "+91 9876543210"
   );
 
+  const [activeTarget, setActiveTarget] = useState<"header" | "body" | "footer">("body");
+
   // Update editor state when selecting different template event
   const handleSelectTemplate = (eventKey: string) => {
     setSelectedEvent(eventKey);
@@ -265,7 +267,13 @@ export default function TemplatesAndSimulatorPage() {
   };
 
   const insertVariable = (variableName: string) => {
-    setBodyText((prev: string) => `${prev} {{${variableName}}}`);
+    if (activeTarget === "header") {
+      setHeaderText((prev: string) => `${prev} {{${variableName}}}`);
+    } else if (activeTarget === "footer") {
+      setFooterText((prev: string) => `${prev} {{${variableName}}}`);
+    } else {
+      setBodyText((prev: string) => `${prev} {{${variableName}}}`);
+    }
   };
 
   const isSubmitting = fetcher.state !== "idle";
@@ -363,6 +371,7 @@ export default function TemplatesAndSimulatorPage() {
 
   const simulatedBody = interpolateVariables(bodyText, sampleVariables);
   const simulatedHeader = interpolateVariables(headerText, sampleVariables);
+  const simulatedFooter = interpolateVariables(footerText, sampleVariables);
 
   const availableVariables = [
     { label: "Customer Name", key: "customer_name" },
@@ -432,6 +441,7 @@ export default function TemplatesAndSimulatorPage() {
                     label="Header Text"
                     value={headerText}
                     onChange={setHeaderText}
+                    onFocus={() => setActiveTarget("header")}
                     autoComplete="off"
                     helpText="Appears bold at the top of your message. Supports variables like {{order_number}}."
                   />
@@ -447,11 +457,37 @@ export default function TemplatesAndSimulatorPage() {
                   />
                 )}
 
-                {/* Variable Pills */}
+                {/* Variable Pills with Target Selector */}
                 <BlockStack gap="200">
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Click to insert dynamic Shopify variable:
-                  </Text>
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Click pill to insert variable:
+                    </Text>
+                    <InlineStack gap="100">
+                      <Text as="span" variant="bodyXs" tone="subdued">Target:</Text>
+                      <Button
+                        size="micro"
+                        pressed={activeTarget === "header"}
+                        onClick={() => setActiveTarget("header")}
+                      >
+                        Header
+                      </Button>
+                      <Button
+                        size="micro"
+                        pressed={activeTarget === "body"}
+                        onClick={() => setActiveTarget("body")}
+                      >
+                        Body
+                      </Button>
+                      <Button
+                        size="micro"
+                        pressed={activeTarget === "footer"}
+                        onClick={() => setActiveTarget("footer")}
+                      >
+                        Footer
+                      </Button>
+                    </InlineStack>
+                  </InlineStack>
                   <InlineStack gap="200" wrap>
                     {availableVariables.map((v) => (
                       <div
@@ -470,6 +506,7 @@ export default function TemplatesAndSimulatorPage() {
                   label="Message Body"
                   value={bodyText}
                   onChange={setBodyText}
+                  onFocus={() => setActiveTarget("body")}
                   multiline={6}
                   autoComplete="off"
                   helpText="Use {{variable_name}} for dynamic store data."
@@ -480,8 +517,9 @@ export default function TemplatesAndSimulatorPage() {
                   label="Footer Text (Optional)"
                   value={footerText}
                   onChange={setFooterText}
+                  onFocus={() => setActiveTarget("footer")}
                   autoComplete="off"
-                  helpText="Small muted text at the bottom. E.g., 'Reply STOP to unsubscribe'."
+                  helpText="Small muted text at the bottom. Supports variables like {{store_name}}."
                 />
 
                 {/* Button Action Configuration */}
@@ -690,7 +728,7 @@ export default function TemplatesAndSimulatorPage() {
                         </div>
 
                         {/* Message Footer */}
-                        {footerText && (
+                        {simulatedFooter && (
                           <div
                             style={{
                               fontSize: "11px",
@@ -698,7 +736,7 @@ export default function TemplatesAndSimulatorPage() {
                               marginTop: "6px",
                             }}
                           >
-                            {footerText}
+                            {simulatedFooter}
                           </div>
                         )}
 
