@@ -2,18 +2,30 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
 import { Link, NavLink, Outlet, useLoaderData, useLocation, Form, useNavigation } from "@remix-run/react";
 import { requirePortalUser } from "../utils/portal-auth.server";
+import db from "../db.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   if (url.pathname.endsWith("/login")) {
-    return json({ user: null });
+    return json({ user: null, queueCount: 0 });
   }
   const user = await requirePortalUser(request);
-  return json({ user });
+
+  const queueCount = await db.conversation.count({
+    where: {
+      merchantId: user.merchantId,
+      OR: [
+        { status: "NEEDS_REPLY" },
+        { unreadCount: { gt: 0 } },
+      ],
+    },
+  });
+
+  return json({ user, queueCount });
 }
 
 export default function PortalLayout() {
-  const { user } = useLoaderData<typeof loader>();
+  const { user, queueCount } = useLoaderData<typeof loader>();
   const location = useLocation();
   const navigationState = useNavigation();
   const isNavigating = navigationState.state !== "idle";
@@ -44,12 +56,14 @@ export default function PortalLayout() {
           href: "/portal/admin",
           icon: "👑",
           badge: "Control",
+          isCritical: false,
         },
         {
           name: "Live Support Inbox",
           href: "/portal/inbox",
           icon: "💬",
-          badge: "2-Way",
+          badge: queueCount > 0 ? `🚨 ${queueCount} Waiting` : "2-Way",
+          isCritical: queueCount > 0,
         },
       ]
     : [
@@ -58,12 +72,14 @@ export default function PortalLayout() {
           href: "/portal/dashboard",
           icon: "📊",
           badge: null,
+          isCritical: false,
         },
         {
           name: "Live Support Inbox",
           href: "/portal/inbox",
           icon: "💬",
-          badge: "2-Way",
+          badge: queueCount > 0 ? `🚨 ${queueCount} Waiting` : "2-Way",
+          isCritical: queueCount > 0,
         },
         ...(isOwnerOrAdmin
           ? [
@@ -72,12 +88,14 @@ export default function PortalLayout() {
                 href: "/portal/team",
                 icon: "👥",
                 badge: user.role,
+                isCritical: false,
               },
               {
                 name: "Billing & Plans",
                 href: "/portal/billing",
                 icon: "💳",
                 badge: "SaaS",
+                isCritical: false,
               },
             ]
           : []),
@@ -184,7 +202,13 @@ export default function PortalLayout() {
                     <span>{item.name}</span>
                   </div>
                   {item.badge && (
-                    <span className="text-[9px] bg-slate-800 text-slate-400 border border-slate-700/60 px-1.5 py-0.5 rounded font-mono">
+                    <span
+                      className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold tracking-tight ${
+                        item.isCritical
+                          ? "bg-amber-500 text-slate-950 font-extrabold shadow-sm animate-pulse"
+                          : "bg-slate-800 text-slate-400 border border-slate-700/60"
+                      }`}
+                    >
                       {item.badge}
                     </span>
                   )}

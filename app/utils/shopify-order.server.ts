@@ -7,7 +7,7 @@ export interface SyncOrderToShopifyOptions {
   shop: string;
   orderId?: string | null;
   orderNumber: string;
-  status: "CONFIRMED" | "UPDATE_REQUESTED";
+  status: "CONFIRMED" | "UPDATE_REQUESTED" | "ADDRESS_UPDATED" | "QUERY_REQUESTED" | "CANCELLED";
   customerNotes?: string | null;
 }
 
@@ -106,7 +106,7 @@ export async function syncOrderUpdateToShopify(options: SyncOrderToShopifyOption
     if (status === "CONFIRMED") {
       // Add confirmed tags, remove pending/update tags
       newTags = newTags.filter(
-        (t) => t !== "Address Update Requested" && t !== "WhatsApp Update Needed"
+        (t) => t !== "Address Update Requested" && t !== "WhatsApp Update Needed" && t !== "WhatsApp Action Needed"
       );
       if (!newTags.includes("WhatsApp Confirmed")) newTags.push("WhatsApp Confirmed");
       if (!newTags.includes("Address Confirmed")) newTags.push("Address Confirmed");
@@ -117,11 +117,22 @@ export async function syncOrderUpdateToShopify(options: SyncOrderToShopifyOption
       if (!newTags.includes("Address Update Requested")) newTags.push("Address Update Requested");
       if (!newTags.includes("WhatsApp Action Needed")) newTags.push("WhatsApp Action Needed");
 
+      noteAddition = `\n\n[StorePing] ⚠️ Customer requested address/contact change via WhatsApp on ${nowStr}. Awaiting customer input.`;
+    } else if (status === "ADDRESS_UPDATED") {
+      // Customer provided updated address details!
+      newTags = newTags.filter((t) => t !== "Address Update Requested");
+      if (!newTags.includes("WhatsApp-Address-Updated")) newTags.push("WhatsApp-Address-Updated");
+      if (!newTags.includes("WhatsApp Action Needed")) newTags.push("WhatsApp Action Needed");
+
       if (customerNotes) {
-        noteAddition = `\n\n[StorePing] ⚠️ Customer updated delivery details via WhatsApp on ${nowStr}:\n"${customerNotes}"`;
-      } else {
-        noteAddition = `\n\n[StorePing] ⚠️ Customer requested address/contact change via WhatsApp on ${nowStr}. Awaiting customer input.`;
+        noteAddition = `\n\n[StorePing] 📝 Customer updated delivery details via WhatsApp on ${nowStr}:\n"${customerNotes}"`;
       }
+    } else if (status === "QUERY_REQUESTED") {
+      if (!newTags.includes("WhatsApp Query Requested")) newTags.push("WhatsApp Query Requested");
+      noteAddition = `\n\n[StorePing] 💬 Customer requested support query via WhatsApp on ${nowStr}.`;
+    } else if (status === "CANCELLED") {
+      if (!newTags.includes("WhatsApp Cancel Requested")) newTags.push("WhatsApp Cancel Requested");
+      noteAddition = `\n\n[StorePing] ❌ Customer requested order cancellation via WhatsApp on ${nowStr}.`;
     }
 
     // Append to note if not already present

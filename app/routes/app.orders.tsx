@@ -814,7 +814,7 @@ export default function OrdersManualPage() {
   const filteredOrders = useMemo(() => {
     let list = orders;
     if (selectedTab === 1) list = list.filter((o: any) => o.confirmationStatus === "CONFIRMED");
-    if (selectedTab === 2) list = list.filter((o: any) => o.confirmationStatus === "UPDATE_REQUESTED");
+    if (selectedTab === 2) list = list.filter((o: any) => o.confirmationStatus === "UPDATE_REQUESTED" || o.confirmationStatus === "ADDRESS_UPDATED");
 
     if (!searchQuery.trim()) return list;
 
@@ -868,12 +868,12 @@ export default function OrdersManualPage() {
   }, [abandonedCarts, searchQuery]);
 
   const confirmedCount = orders.filter((o: any) => o.confirmationStatus === "CONFIRMED").length;
-  const updateReqCount = orders.filter((o: any) => o.confirmationStatus === "UPDATE_REQUESTED").length;
+  const updateReqCount = orders.filter((o: any) => o.confirmationStatus === "UPDATE_REQUESTED" || o.confirmationStatus === "ADDRESS_UPDATED").length;
 
   const tabs = [
     { id: "all-orders", content: `📦 All Orders & Drafts (${orders.length})` },
     { id: "confirmed-orders", content: `✅ Address Confirmed (${confirmedCount})` },
-    { id: "update-orders", content: `⚠️ Update Requested (${updateReqCount})` },
+    { id: "update-orders", content: `⚠️ Address Updates (${updateReqCount})` },
     { id: "carts", content: `🛒 Abandoned Checkouts (${abandonedCarts.length})` },
   ];
 
@@ -886,17 +886,35 @@ export default function OrdersManualPage() {
             <Badge tone="success">✅ Address Confirmed</Badge>
           </Tooltip>
         );
-      case "UPDATE_REQUESTED":
+      case "ADDRESS_UPDATED":
         return (
-          <Tooltip content={order.customerNotes ? `Customer Note: "${order.customerNotes}"` : "Customer requested address or mobile change via WhatsApp"}>
+          <Tooltip content={order.customerNotes ? `Customer Note: "${order.customerNotes}"` : "Customer provided updated address on WhatsApp"}>
             <BlockStack gap="050">
-              <Badge tone="critical">⚠️ Update Requested</Badge>
+              <Badge tone="critical">📝 Address Updated</Badge>
               {order.customerNotes && (
                 <Text as="span" variant="bodyXs" tone="critical" truncate>
                   📝 {order.customerNotes.slice(0, 30)}...
                 </Text>
               )}
             </BlockStack>
+          </Tooltip>
+        );
+      case "UPDATE_REQUESTED":
+        return (
+          <Tooltip content="Customer clicked Update Address, awaiting customer's reply with new address">
+            <Badge tone="attention">⏳ Awaiting Address Text</Badge>
+          </Tooltip>
+        );
+      case "QUERY_REQUESTED":
+        return (
+          <Tooltip content="Customer clicked Ask Query / Support">
+            <Badge tone="info">💬 Support Requested</Badge>
+          </Tooltip>
+        );
+      case "CANCELLED":
+        return (
+          <Tooltip content="Customer requested order cancellation">
+            <Badge tone="critical">❌ Cancel Requested</Badge>
           </Tooltip>
         );
       case "PENDING":
@@ -1130,13 +1148,13 @@ export default function OrdersManualPage() {
                       💬 Open Chat
                     </Button>
                   )}
-                  {(selectedOrder?.confirmationStatus === "UPDATE_REQUESTED" || selectedOrder?.confirmationStatus === "CONFIRMED") && (
+                  {(selectedOrder?.confirmationStatus === "UPDATE_REQUESTED" || selectedOrder?.confirmationStatus === "ADDRESS_UPDATED" || selectedOrder?.confirmationStatus === "CONFIRMED") && (
                     <Button
                       size="slim"
                       onClick={() => handleSyncToShopify(selectedOrder)}
                       loading={isSubmitting}
                     >
-                      {selectedOrder.confirmationStatus === "UPDATE_REQUESTED" ? "📝 Push Note to Shopify" : "🔄 Sync Shopify"}
+                      {selectedOrder.confirmationStatus === "UPDATE_REQUESTED" || selectedOrder.confirmationStatus === "ADDRESS_UPDATED" ? "📝 Push Note to Shopify" : "🔄 Sync Shopify"}
                     </Button>
                   )}
                 </InlineStack>

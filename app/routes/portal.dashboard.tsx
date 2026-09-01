@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { Form, useActionData, useLoaderData, useNavigation } from "@remix-run/react";
+import { Form, Link, useActionData, useLoaderData, useNavigation } from "@remix-run/react";
 import db from "../db.server";
 import { requireRole } from "../utils/portal-auth.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
@@ -8,7 +8,7 @@ import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requireRole(request, ["OWNER", "MANAGER"]);
 
-  const [merchant, deliveredCount, readCount] = await Promise.all([
+  const [merchant, deliveredCount, readCount, supportQueueCount] = await Promise.all([
     db.merchant.findUnique({
       where: { id: user.merchantId },
       include: {
@@ -32,6 +32,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
     db.messageLog.count({
       where: { merchantId: user.merchantId, status: "READ" },
     }),
+    db.conversation.count({
+      where: {
+        merchantId: user.merchantId,
+        OR: [
+          { status: "NEEDS_REPLY" },
+          { unreadCount: { gt: 0 } },
+        ],
+      },
+    }),
   ]);
 
   if (!merchant) {
@@ -47,6 +56,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       totalSent,
       deliveredCount,
       readCount,
+      supportQueueCount,
       activeConversations: merchant._count.conversations,
       cartRecoveries: merchant._count.cartRecoveries,
       orderConfirmations: merchant._count.orderConfirmations,
@@ -230,29 +240,66 @@ export default function PortalDashboard() {
       </div>
 
       {/* 2. Key Metrics & Analytics Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <div className="p-6 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Dispatches</div>
-          <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.totalSent}</div>
-          <div className="text-[11px] text-emerald-400 mt-1">Live Automated Messages</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        {/* Priority Support Queue Card */}
+        <Link to="/portal/inbox?filter=NEEDS_REPLY" className="block group">
+          <div className={`p-5 rounded-2xl border transition-all h-full flex flex-col justify-between ${
+            stats.supportQueueCount > 0
+              ? "bg-amber-500/10 border-amber-500/40 hover:border-amber-500/80 shadow-lg shadow-amber-500/5"
+              : "bg-slate-900/90 border-slate-800 hover:border-slate-700"
+          }`}>
+            <div>
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                  <span>🚨 Support Queue</span>
+                </div>
+                {stats.supportQueueCount > 0 && (
+                  <span className="text-[10px] bg-amber-500 text-slate-950 px-2 py-0.5 rounded-full font-extrabold animate-pulse">
+                    Action Needed
+                  </span>
+                )}
+              </div>
+              <div className={`text-3xl font-extrabold mt-2 font-mono ${stats.supportQueueCount > 0 ? "text-amber-400" : "text-white"}`}>
+                {stats.supportQueueCount}
+              </div>
+            </div>
+            <div className="text-[11px] text-amber-300/80 mt-2 flex items-center justify-between font-medium">
+              <span>Waiting Live Chats</span>
+              <span className="group-hover:translate-x-1 transition-transform">→</span>
+            </div>
+          </div>
+        </Link>
+
+        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Dispatches</div>
+            <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.totalSent}</div>
+          </div>
+          <div className="text-[11px] text-emerald-400 mt-2">Live Automated Messages</div>
         </div>
 
-        <div className="p-6 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Active Conversations</div>
-          <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.activeConversations}</div>
-          <div className="text-[11px] text-teal-400 mt-1">2-Way Support Chats</div>
+        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Active Conversations</div>
+            <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.activeConversations}</div>
+          </div>
+          <div className="text-[11px] text-teal-400 mt-2">2-Way Support Chats</div>
         </div>
 
-        <div className="p-6 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Order Confirmations</div>
-          <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.orderConfirmations}</div>
-          <div className="text-[11px] text-emerald-400 mt-1">COD & Address Actions</div>
+        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Order Confirmations</div>
+            <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.orderConfirmations}</div>
+          </div>
+          <div className="text-[11px] text-emerald-400 mt-2">COD & Address Actions</div>
         </div>
 
-        <div className="p-6 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cart Recoveries</div>
-          <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.cartRecoveries}</div>
-          <div className="text-[11px] text-teal-400 mt-1">Abandoned Checkout Triggers</div>
+        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cart Recoveries</div>
+            <div className="text-3xl font-extrabold text-white mt-2 font-mono">{stats.cartRecoveries}</div>
+          </div>
+          <div className="text-[11px] text-teal-400 mt-2">Abandoned Checkout Triggers</div>
         </div>
       </div>
 

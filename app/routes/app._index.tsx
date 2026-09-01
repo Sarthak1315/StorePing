@@ -101,12 +101,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }> = [];
 
   for (const conf of confirmations) {
-    if (conf.status === "UPDATE_REQUESTED") {
+    if (conf.status === "ADDRESS_UPDATED") {
+      customerNotifications.push({
+        id: `conf-${conf.id}`,
+        type: "UPDATE_REQUESTED",
+        title: `Order #${conf.orderNumber}: Address Updated by Customer`,
+        description: `${conf.customerName || "Customer"} provided: "${conf.customerNotes || "Updated address"}"`,
+        time: new Date(conf.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        actionUrl: "/app/orders",
+        actionLabel: "View Order",
+        badgeTone: "warning",
+      });
+    } else if (conf.status === "UPDATE_REQUESTED") {
       customerNotifications.push({
         id: `conf-${conf.id}`,
         type: "UPDATE_REQUESTED",
         title: `Order #${conf.orderNumber}: Address Change Requested`,
-        description: `${conf.customerName || "Customer"} requested: "${conf.customerNotes || "Address change"}"`,
+        description: `${conf.customerName || "Customer"} requested: "${conf.customerNotes || "Awaiting address input"}"`,
         time: new Date(conf.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         actionUrl: "/app/orders",
         actionLabel: "View Order",

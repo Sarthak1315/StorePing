@@ -860,7 +860,13 @@ export default function LiveInboxPage() {
                             <Badge tone="success">✅ Address Confirmed</Badge>
                           )}
                           {activeConfirmation?.status === "UPDATE_REQUESTED" && (
-                            <Badge tone="critical">⚠️ Address Update Requested</Badge>
+                            <Badge tone="attention">⏳ Awaiting Address Text</Badge>
+                          )}
+                          {activeConfirmation?.status === "ADDRESS_UPDATED" && (
+                            <Badge tone="critical">📝 Address Updated</Badge>
+                          )}
+                          {activeConfirmation?.status === "QUERY_REQUESTED" && (
+                            <Badge tone="info">💬 Support Requested</Badge>
                           )}
                         </InlineStack>
                       </div>

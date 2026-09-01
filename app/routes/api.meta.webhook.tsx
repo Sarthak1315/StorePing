@@ -192,17 +192,62 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
             // Check if this is an interactive button click or text reply relating to an order confirmation
             let relatedOrderNumber: string | null = null;
+            const isInteractiveOrButton = msgType === "INTERACTIVE" || msgType === "BUTTON";
+            const lowerText = messageText.trim().toLowerCase();
 
-            // Extract order number from button reply ID if pattern is confirm_order_1002 or update_address_1002
-            if (buttonReplyId.startsWith("confirm_order_") || buttonReplyId.startsWith("confirm_cod_")) {
-              const rawNum = buttonReplyId.replace("confirm_order_", "").replace("confirm_cod_", "");
+            // Extract order number from button reply ID if pattern is confirm_order_1002, update_address_1002, etc.
+            if (buttonReplyId.startsWith("confirm_order_")) {
+              const rawNum = buttonReplyId.replace("confirm_order_", "");
+              relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
+            } else if (buttonReplyId.startsWith("confirm_cod_")) {
+              const rawNum = buttonReplyId.replace("confirm_cod_", "");
+              relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
+            } else if (buttonReplyId.startsWith("confirm_address_")) {
+              const rawNum = buttonReplyId.replace("confirm_address_", "");
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
             } else if (buttonReplyId.startsWith("update_address_")) {
               const rawNum = buttonReplyId.replace("update_address_", "");
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
+            } else if (buttonReplyId.startsWith("support_query_") || buttonReplyId.startsWith("ask_query_")) {
+              const rawNum = buttonReplyId.replace("support_query_", "").replace("ask_query_", "");
+              relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
+            } else if (buttonReplyId.startsWith("cancel_cod_") || buttonReplyId.startsWith("cancel_order_")) {
+              const rawNum = buttonReplyId.replace("cancel_cod_", "").replace("cancel_order_", "");
+              relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
             }
 
-            // Find matching OrderConfirmation record
+            // Handle Action Detection:
+            const isConfirmAction =
+              buttonReplyId.includes("confirm_order") ||
+              buttonReplyId.includes("confirm_cod") ||
+              buttonReplyId.includes("confirm_address") ||
+              lowerText === "confirm address" ||
+              lowerText === "✅ confirm address" ||
+              lowerText === "confirm order";
+
+            const isUpdateAddressAction =
+              buttonReplyId.includes("update_address") ||
+              lowerText === "update address" ||
+              lowerText === "update address /" ||
+              lowerText === "✏️ update address" ||
+              lowerText === "✏️ update address /" ||
+              lowerText === "change address";
+
+            const isSupportAction =
+              buttonReplyId.includes("support_query") ||
+              buttonReplyId.includes("ask_query") ||
+              lowerText === "ask query" ||
+              lowerText === "💬 ask query" ||
+              lowerText === "need help" ||
+              lowerText === "contact support";
+
+            const isCancelAction =
+              buttonReplyId.includes("cancel_cod") ||
+              buttonReplyId.includes("cancel_order") ||
+              lowerText === "cancel order" ||
+              lowerText === "❌ cancel order";
+
+            // Find matching OrderConfirmation record if explicit order number exists or fallback to most recent active order
             let matchingOrder = relatedOrderNumber
               ? await db.orderConfirmation.findFirst({
                   where: { merchantId: merchant.id, orderNumber: relatedOrderNumber },
@@ -212,27 +257,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   orderBy: { createdAt: "desc" },
                 });
 
-            if (matchingOrder) {
+            if (matchingOrder && !relatedOrderNumber) {
               relatedOrderNumber = matchingOrder.orderNumber;
             }
 
-            // Handle Specific Action Buttons:
-            const isConfirmAction =
-              buttonReplyId.includes("confirm_order") ||
-              buttonReplyId.includes("confirm_cod") ||
-              messageText.toLowerCase().includes("confirm address") ||
-              messageText.toLowerCase().includes("confirm order");
-
-            const isUpdateAddressAction =
-              buttonReplyId.includes("update_address") ||
-              messageText.toLowerCase().includes("update address") ||
-              messageText.toLowerCase().includes("change address");
-
-            const isSupportAction =
-              buttonReplyId.includes("support_query") ||
-              buttonReplyId.includes("ask_query") ||
-              messageText.toLowerCase().includes("ask query") ||
-              messageText.toLowerCase().includes("need help");
+            // Check if there is an active order specifically waiting for the customer to type their new address
+            const awaitingAddressOrder = await db.orderConfirmation.findFirst({
+              where: {
+                merchantId: merchant.id,
+                customerPhone: fromPhone,
+                status: "UPDATE_REQUESTED",
+              },
+              orderBy: { updatedAt: "desc" },
+            });
 
             let handledSpecificAction = false;
 
@@ -268,7 +305,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               });
             } else if (isUpdateAddressAction && matchingOrder) {
               handledSpecificAction = true;
-              // 1. Mark Order as Update Requested in StorePing DB
+              // 1. Mark Order as UPDATE_REQUESTED (awaiting customer address input)
               await db.orderConfirmation.update({
                 where: { id: matchingOrder.id },
                 data: {
@@ -295,31 +332,82 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 bodyText: promptReplyText,
                 senderRole: "BOT",
               });
-            } else if (matchingOrder && matchingOrder.status === "UPDATE_REQUESTED" && msgType === "TEXT") {
+            } else if (isSupportAction) {
               handledSpecificAction = true;
-              // If customer previously requested update and is now sending their new address text, save notes!
+              if (matchingOrder && matchingOrder.status === "PENDING") {
+                await db.orderConfirmation.update({
+                  where: { id: matchingOrder.id },
+                  data: { status: "QUERY_REQUESTED" },
+                });
+                syncOrderUpdateToShopify({
+                  shop: merchant.shop,
+                  orderId: matchingOrder.orderId,
+                  orderNumber: matchingOrder.orderNumber,
+                  status: "QUERY_REQUESTED",
+                }).catch((err) => console.warn("Shopify order sync notice:", err));
+              }
+
+              const supportReplyText = `💬 *Support Request Received${matchingOrder ? ` for ${matchingOrder.orderNumber}` : ""}*\n\nOur customer support team has been notified and will assist you right here in chat. Please reply with any questions or details you need help with! 😊`;
+
+              await sendWhatsAppMessage({
+                merchantId: merchant.id,
+                recipientPhone: fromPhone,
+                customerName: profileName || matchingOrder?.customerName || "Customer",
+                eventType: "SUPPORT_AUTO_REPLY",
+                bodyText: supportReplyText,
+                senderRole: "BOT",
+              });
+            } else if (isCancelAction && matchingOrder) {
+              handledSpecificAction = true;
               await db.orderConfirmation.update({
                 where: { id: matchingOrder.id },
-                data: {
-                  customerNotes: messageText,
-                },
+                data: { status: "CANCELLED" },
               });
-
-              // 3. Immediately Push Customer's Address/Mobile Note into Shopify Admin Order!
-              await syncOrderUpdateToShopify({
+              syncOrderUpdateToShopify({
                 shop: merchant.shop,
                 orderId: matchingOrder.orderId,
                 orderNumber: matchingOrder.orderNumber,
-                status: "UPDATE_REQUESTED",
-                customerNotes: messageText,
-              }).catch((err) => console.warn("Shopify order sync note notice:", err));
+                status: "CANCELLED",
+              }).catch((err) => console.warn("Shopify order sync notice:", err));
 
-              // Auto-acknowledge receipt
-              const ackText = `✅ *Thank you!*\nWe have received your updated details: \n_"${messageText}"_\n\nOur team has updated this on Order *${matchingOrder.orderNumber}*.`;
+              const cancelReplyText = `❌ *Cancellation Request Received for ${matchingOrder.orderNumber}*\n\nWe have recorded your request to cancel order *${matchingOrder.orderNumber}*. Our support team has been notified and will update your order status shortly.`;
+
               await sendWhatsAppMessage({
                 merchantId: merchant.id,
                 recipientPhone: fromPhone,
                 customerName: profileName || matchingOrder.customerName || "Customer",
+                eventType: "ORDER_CONFIRM_REPLY",
+                bodyText: cancelReplyText,
+                senderRole: "BOT",
+              });
+            } else if (awaitingAddressOrder && !isInteractiveOrButton && msgType === "TEXT") {
+              // Customer previously requested an address update and has now replied with their new address text!
+              handledSpecificAction = true;
+
+              // 1. Save customer's updated address notes and CLOSE the address update state -> ADDRESS_UPDATED
+              await db.orderConfirmation.update({
+                where: { id: awaitingAddressOrder.id },
+                data: {
+                  customerNotes: messageText,
+                  status: "ADDRESS_UPDATED", // Flow is now COMPLETED / CLOSED!
+                },
+              });
+
+              // 2. Immediately Push Customer's Address/Mobile Note into Shopify Admin Order!
+              await syncOrderUpdateToShopify({
+                shop: merchant.shop,
+                orderId: awaitingAddressOrder.orderId,
+                orderNumber: awaitingAddressOrder.orderNumber,
+                status: "ADDRESS_UPDATED",
+                customerNotes: messageText,
+              }).catch((err) => console.warn("Shopify order sync note notice:", err));
+
+              // 3. Auto-acknowledge receipt and close the update prompt flow
+              const ackText = `✅ *Thank you!*\nWe have received your updated details:\n_"${messageText}"_\n\nOur team has updated this on Order *${awaitingAddressOrder.orderNumber}*. If you have any further questions, feel free to ask! 😊`;
+              await sendWhatsAppMessage({
+                merchantId: merchant.id,
+                recipientPhone: fromPhone,
+                customerName: profileName || awaitingAddressOrder.customerName || "Customer",
                 eventType: "ADDRESS_SAVED_ACK",
                 bodyText: ackText,
                 senderRole: "BOT",
@@ -375,14 +463,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             });
 
             // 🤖 Automatic Support Greeting Flow (Flow 7)
-            if (!handledSpecificAction && merchant.supportChatEnabled) {
-              // Check if a bot auto-reply was sent recently (last 1 hour) to avoid spamming
-              const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+            if (!handledSpecificAction && (merchant.supportChatEnabled ?? true)) {
+              // Check if a bot auto-reply was sent recently (last 15 minutes) to avoid spamming multiple fast messages
+              const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
               const recentBotMessage = await db.chatMessage.findFirst({
                 where: {
                   conversationId: conversation.id,
                   sender: "BOT",
-                  createdAt: { gte: oneHourAgo },
+                  createdAt: { gte: fifteenMinAgo },
                 },
               });
 
@@ -392,12 +480,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   where: { merchantId: merchant.id, eventType: "SUPPORT_AUTO_REPLY", isActive: true },
                 });
 
-                const customerDisplayName = profileName || matchingOrder?.customerName || "there";
                 const storeDisplayName = merchant.name || merchant.shop.replace(".myshopify.com", "");
+                const validProfileName = (profileName && profileName.trim() !== "." && profileName.trim() !== "-") ? profileName.trim() : null;
+                const rawCustomerName = validProfileName || matchingOrder?.customerName || null;
+                const customerDisplayName = rawCustomerName || "there";
+                const knownOrder = matchingOrder?.orderNumber ? matchingOrder : null;
 
-                let greetingBody = `Hi ${customerDisplayName}! Thanks for reaching out to *${storeDisplayName}* support. 😊\n\nWe have received your message and an agent will be with you shortly. If you are asking about an existing order, please provide your order number (e.g. #1002).`;
+                let greetingBody: string;
                 let greetingHeader = `👋 Welcome to ${storeDisplayName} Support`;
-                let greetingFooter = `${storeDisplayName} Team`;
+                let greetingFooter = `${storeDisplayName} Live Support`;
 
                 if (tpl) {
                   greetingBody = interpolateVariables(tpl.bodyText, {
@@ -416,6 +507,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                     greetingFooter = interpolateVariables(tpl.footerText, {
                       store_name: storeDisplayName,
                     });
+                  }
+                } else {
+                  // Dynamic Adaptive Default Greeting based on available customer context
+                  if (knownOrder) {
+                    // Scenario 1: Customer has an existing Order on file
+                    if (rawCustomerName) {
+                      greetingBody = `Hi ${rawCustomerName}! 👋 Thank you for reaching out to *${storeDisplayName}* support. 😊\n\nOur customer support team has received your message regarding Order *${knownOrder.orderNumber}* and an agent will connect with you shortly.\n\n_How can we assist you today?_`;
+                    } else {
+                      greetingBody = `Hello! 👋 Thank you for reaching out to *${storeDisplayName}* support. 😊\n\nOur customer support team has received your message regarding Order *${knownOrder.orderNumber}* and an agent will connect with you shortly.\n\n_How can we assist you today?_`;
+                    }
+                  } else if (rawCustomerName) {
+                    // Scenario 2: Known Customer Name (from WhatsApp profile), but no order
+                    greetingBody = `Hi ${rawCustomerName}! 👋 Welcome to *${storeDisplayName}*. 😊\n\nOur customer support team has received your message and an agent will connect with you shortly.\n\n_How can we help you today?_`;
+                  } else {
+                    // Scenario 3: Simple, Clean Message for New / Unknown Customer (No Order & No Profile Name)
+                    greetingBody = `Hello! 👋 Welcome to *${storeDisplayName}*. 😊\n\nOur customer support team has received your message and an agent will connect with you shortly.\n\n_How can we help you today?_`;
                   }
                 }
 
@@ -440,6 +547,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                       sender: "BOT",
                       messageType: "TEXT",
                       bodyText: greetingBody,
+                      metaMessageId: botSendRes.messageId || null,
                       status: "DELIVERED",
                     },
                   });
