@@ -425,6 +425,27 @@ export default function SuperAdminDashboard() {
   const [shopifyApiTypeFilter, setShopifyApiTypeFilter] = useState("ALL");
   const [selectedApiLog, setSelectedApiLog] = useState<(typeof apiLogs)[number] | null>(null);
   const [selectedShopifyLog, setSelectedShopifyLog] = useState<(typeof shopifyLogs)[number] | null>(null);
+  const [metaInspectTab, setMetaInspectTab] = useState<"OVERVIEW" | "PAYLOAD" | "RESPONSE" | "ERROR" | "RAW_DB">("OVERVIEW");
+  const [shopifyInspectTab, setShopifyInspectTab] = useState<"OVERVIEW" | "PAYLOAD" | "RESPONSE" | "ERROR" | "RAW_DB">("OVERVIEW");
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string, key: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
+    }
+  };
+
+  const formatJson = (val: string | null | undefined) => {
+    if (!val) return "";
+    try {
+      const parsed = JSON.parse(val);
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return val;
+    }
+  };
 
   // Group By & Pagination States for Meta
   const [metaGroupBy, setMetaGroupBy] = useState<"NONE" | "STORE" | "WEBHOOK" | "ENDPOINT">("NONE");
@@ -2832,103 +2853,407 @@ export default function SuperAdminDashboard() {
                 </>
               )}
 
-              {/* Meta Transaction JSON Inspector Modal */}
+              {/* ========================================================================= */}
+              {/* META TRANSACTION FULL DATABASE INSPECTOR MODAL */}
+              {/* ========================================================================= */}
               {selectedApiLog && (
-                <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-base">📡</span>
-                        <h3 className="font-bold text-white text-sm">
-                          Meta API Transaction Inspection
-                        </h3>
+                <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6">
+                  <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-4xl w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[92vh] flex flex-col">
+                    {/* Header */}
+                    <div className="flex items-start justify-between border-b border-slate-800 pb-3 gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-lg">🟢</span>
+                          <h3 className="font-bold text-white text-base">
+                            Meta WhatsApp Cloud API Audit Record
+                          </h3>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                              selectedApiLog.status === "SUCCESS"
+                                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                : selectedApiLog.status === "RATE_LIMITED"
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : "bg-red-500/20 text-red-300 border border-red-500/30"
+                            }`}
+                          >
+                            {selectedApiLog.statusCode || (selectedApiLog.status === "SUCCESS" ? 200 : 500)} {selectedApiLog.status}
+                          </span>
+                          {selectedApiLog.durationMs !== null && (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-slate-800 text-slate-300 border border-slate-700">
+                              ⚡ {selectedApiLog.durationMs}ms
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
+                          <span>ID: {selectedApiLog.id}</span>
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(selectedApiLog.id, "meta_id")}
+                            className="text-[10px] text-slate-400 hover:text-emerald-400 underline transition"
+                          >
+                            {copiedKey === "meta_id" ? "Copied! ✓" : "Copy ID"}
+                          </button>
+                        </div>
                       </div>
+
                       <button
                         type="button"
-                        onClick={() => setSelectedApiLog(null)}
-                        className="text-slate-400 hover:text-white text-base"
+                        onClick={() => {
+                          setSelectedApiLog(null);
+                          setMetaInspectTab("OVERVIEW");
+                        }}
+                        className="text-slate-400 hover:text-white text-lg p-1 hover:bg-slate-800 rounded-lg transition"
                       >
                         ✕
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px] font-mono">
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">TIMESTAMP</span>
-                        <span className="text-white">{new Date(selectedApiLog.createdAt).toLocaleString()}</span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">INITIATED BY</span>
-                        <span className="text-white">{selectedApiLog.initiatedBy || "System"}</span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">STATUS</span>
-                        <span className="text-emerald-400 font-semibold">{selectedApiLog.statusCode} ({selectedApiLog.status})</span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">LATENCY</span>
-                        <span className="text-slate-200">{selectedApiLog.durationMs}ms</span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                        Endpoint
-                      </label>
-                      <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-slate-200">
-                        {selectedApiLog.httpMethod} {selectedApiLog.endpoint}
-                      </div>
-                    </div>
-
-                    {selectedApiLog.rateLimitUsage && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          Rate Limit Header Usage
-                        </label>
-                        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-amber-300">
-                          {selectedApiLog.rateLimitUsage}
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedApiLog.requestPayload && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          Sanitized Request Payload
-                        </label>
-                        <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-48">
-                          {selectedApiLog.requestPayload}
-                        </pre>
-                      </div>
-                    )}
-
-                    {selectedApiLog.responseBody && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          Meta API Response Body
-                        </label>
-                        <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-48">
-                          {selectedApiLog.responseBody}
-                        </pre>
-                      </div>
-                    )}
-
-                    {selectedApiLog.errorMessage && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-red-400 mb-1">
-                          Error Details
-                        </label>
-                        <div className="p-2 rounded-lg bg-red-950/20 border border-red-800/40 font-mono text-xs text-red-300">
-                          {selectedApiLog.errorMessage}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="pt-2 text-right">
+                    {/* Modal Navigation Tabs */}
+                    <div className="flex items-center gap-1.5 border-b border-slate-800 pb-2 text-xs font-medium overflow-x-auto">
                       <button
                         type="button"
-                        onClick={() => setSelectedApiLog(null)}
-                        className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium"
+                        onClick={() => setMetaInspectTab("OVERVIEW")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          metaInspectTab === "OVERVIEW"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>📋</span>
+                        <span>DB Fields & Metadata</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setMetaInspectTab("PAYLOAD")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          metaInspectTab === "PAYLOAD"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>📤</span>
+                        <span>Request Payload {selectedApiLog.requestPayload ? `(${selectedApiLog.requestPayload.length} B)` : "(Empty)"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setMetaInspectTab("RESPONSE")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          metaInspectTab === "RESPONSE"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>📥</span>
+                        <span>Response Body {selectedApiLog.responseBody ? `(${selectedApiLog.responseBody.length} B)` : "(Empty)"}</span>
+                      </button>
+
+                      {selectedApiLog.errorMessage && (
+                        <button
+                          type="button"
+                          onClick={() => setMetaInspectTab("ERROR")}
+                          className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                            metaInspectTab === "ERROR"
+                              ? "bg-red-500/20 text-red-300 border border-red-500/30 font-semibold"
+                              : "text-red-400 hover:text-red-300 hover:bg-red-950/40"
+                          }`}
+                        >
+                          <span>❌</span>
+                          <span>Error Details</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setMetaInspectTab("RAW_DB")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          metaInspectTab === "RAW_DB"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>🗄️</span>
+                        <span>Full DB Row (JSON)</span>
+                      </button>
+                    </div>
+
+                    {/* Modal Tab Body */}
+                    <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                      {/* TAB 1: OVERVIEW & ALL DB FIELDS */}
+                      {metaInspectTab === "OVERVIEW" && (
+                        <div className="space-y-4">
+                          {/* Key Properties Grid */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Store / Merchant
+                              </span>
+                              <div className="font-semibold text-white text-xs">
+                                {selectedApiLog.merchant?.name || selectedApiLog.merchant?.shop || "Global"}
+                              </div>
+                              {selectedApiLog.merchant?.shop && (
+                                <div className="text-[11px] text-emerald-400 font-mono">
+                                  {selectedApiLog.merchant.shop}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Initiated By / Trigger
+                              </span>
+                              <div className="font-semibold text-white text-xs">
+                                {selectedApiLog.initiatedBy || "System"}
+                              </div>
+                              <div className="text-[10px] text-slate-400">Trigger Origin</div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                HTTP Method & Status
+                              </span>
+                              <div className="font-mono text-xs font-semibold text-white flex items-center gap-1.5">
+                                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[10px]">
+                                  {selectedApiLog.httpMethod}
+                                </span>
+                                <span>{selectedApiLog.statusCode || 200} ({selectedApiLog.status})</span>
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-mono">{selectedApiLog.durationMs}ms duration</div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1 sm:col-span-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                  Meta Graph API Endpoint
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(selectedApiLog.endpoint, "meta_endpoint")}
+                                  className="text-[10px] text-slate-400 hover:text-emerald-400"
+                                >
+                                  {copiedKey === "meta_endpoint" ? "Copied! ✓" : "Copy"}
+                                </button>
+                              </div>
+                              <div className="font-mono text-xs text-slate-200 break-all p-1.5 rounded bg-slate-900 border border-slate-800">
+                                {selectedApiLog.httpMethod} {selectedApiLog.endpoint}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Merchant UUID (DB FK)
+                              </span>
+                              <div className="font-mono text-[11px] text-slate-300 break-all">
+                                {selectedApiLog.merchantId || "None (Global)"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                  Meta Message ID (WAMID)
+                                </span>
+                                {selectedApiLog.metaMessageId && (
+                                  <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(selectedApiLog.metaMessageId || "", "meta_wamid")}
+                                    className="text-[10px] text-slate-400 hover:text-emerald-400"
+                                  >
+                                    {copiedKey === "meta_wamid" ? "Copied! ✓" : "Copy"}
+                                  </button>
+                                )}
+                              </div>
+                              <div className="font-mono text-xs text-slate-300 break-all">
+                                {selectedApiLog.metaMessageId || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Rate Limit Usage Header
+                              </span>
+                              <div className="font-mono text-xs text-amber-300 break-all">
+                                {selectedApiLog.rateLimitUsage || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Client / Server IP
+                              </span>
+                              <div className="font-mono text-xs text-slate-300">
+                                {selectedApiLog.ipAddress || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1 sm:col-span-2">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Timestamp Created (Local & UTC)
+                              </span>
+                              <div className="font-mono text-xs text-slate-200">
+                                <div>Local: {new Date(selectedApiLog.createdAt).toLocaleString()}</div>
+                                <div className="text-[10px] text-slate-500">ISO: {new Date(selectedApiLog.createdAt).toISOString()}</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Quick Payload Preview Blocks */}
+                          {selectedApiLog.requestPayload && (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-300">Request Payload Preview</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setMetaInspectTab("PAYLOAD")}
+                                  className="text-xs text-emerald-400 hover:underline"
+                                >
+                                  View Full Formatted Payload ↗
+                                </button>
+                              </div>
+                              <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-32">
+                                {formatJson(selectedApiLog.requestPayload)}
+                              </pre>
+                            </div>
+                          )}
+
+                          {selectedApiLog.responseBody && (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-300">Response Body Preview</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setMetaInspectTab("RESPONSE")}
+                                  className="text-xs text-emerald-400 hover:underline"
+                                >
+                                  View Full Formatted Response ↗
+                                </button>
+                              </div>
+                              <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-32">
+                                {formatJson(selectedApiLog.responseBody)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* TAB 2: REQUEST PAYLOAD */}
+                      {metaInspectTab === "PAYLOAD" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-300">
+                              Sanitized Request Body / HTTP Parameters
+                            </span>
+                            {selectedApiLog.requestPayload && (
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(selectedApiLog.requestPayload || "", "meta_req")}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium transition"
+                              >
+                                {copiedKey === "meta_req" ? "Copied to Clipboard! ✓" : "📋 Copy Payload"}
+                              </button>
+                            )}
+                          </div>
+
+                          {selectedApiLog.requestPayload ? (
+                            <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-emerald-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all leading-relaxed whitespace-pre-wrap">
+                              {formatJson(selectedApiLog.requestPayload)}
+                            </pre>
+                          ) : (
+                            <div className="p-8 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                              No request body payload was recorded for this transaction.
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* TAB 3: RESPONSE BODY */}
+                      {metaInspectTab === "RESPONSE" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-300">
+                              Meta API HTTP Response Body
+                            </span>
+                            {selectedApiLog.responseBody && (
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(selectedApiLog.responseBody || "", "meta_res")}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium transition"
+                              >
+                                {copiedKey === "meta_res" ? "Copied to Clipboard! ✓" : "📋 Copy Response"}
+                              </button>
+                            )}
+                          </div>
+
+                          {selectedApiLog.responseBody ? (
+                            <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-cyan-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all leading-relaxed whitespace-pre-wrap">
+                              {formatJson(selectedApiLog.responseBody)}
+                            </pre>
+                          ) : (
+                            <div className="p-8 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                              No response body recorded.
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* TAB 4: ERROR DETAILS */}
+                      {metaInspectTab === "ERROR" && selectedApiLog.errorMessage && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-red-400">
+                              Transaction Exception / Error Stack
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(selectedApiLog.errorMessage || "", "meta_err")}
+                              className="px-2.5 py-1 bg-red-950/40 hover:bg-red-900/50 text-red-300 border border-red-800/40 rounded text-xs font-medium transition"
+                            >
+                              {copiedKey === "meta_err" ? "Copied! ✓" : "📋 Copy Error"}
+                            </button>
+                          </div>
+
+                          <div className="p-4 rounded-xl bg-red-950/20 border border-red-800/40 text-red-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all whitespace-pre-wrap leading-relaxed">
+                            {selectedApiLog.errorMessage}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* TAB 5: RAW DB ROW */}
+                      {metaInspectTab === "RAW_DB" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-300">
+                              Complete Prisma DB Entity (JSON)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(JSON.stringify(selectedApiLog, null, 2), "meta_raw")}
+                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium transition"
+                            >
+                              {copiedKey === "meta_raw" ? "Copied DB Record! ✓" : "📋 Copy Entire Record"}
+                            </button>
+                          </div>
+
+                          <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all leading-relaxed whitespace-pre-wrap">
+                            {JSON.stringify(selectedApiLog, null, 2)}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
+                      <div className="text-[11px] text-slate-500 font-mono">
+                        Table: storeping_MetaApiLog
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedApiLog(null);
+                          setMetaInspectTab("OVERVIEW");
+                        }}
+                        className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition"
                       >
                         Close
                       </button>
@@ -2937,114 +3262,419 @@ export default function SuperAdminDashboard() {
                 </div>
               )}
 
-              {/* Shopify Transaction JSON Inspector Modal */}
+              {/* ========================================================================= */}
+              {/* SHOPIFY TRANSACTION FULL DATABASE INSPECTOR MODAL */}
+              {/* ========================================================================= */}
               {selectedShopifyLog && (
-                <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-base">🛍️</span>
-                        <h3 className="font-bold text-white text-sm">
-                          Shopify Webhook & API Transaction Inspection
-                        </h3>
+                <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6">
+                  <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-4xl w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[92vh] flex flex-col">
+                    {/* Header */}
+                    <div className="flex items-start justify-between border-b border-slate-800 pb-3 gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-lg">🛍️</span>
+                          <h3 className="font-bold text-white text-base">
+                            Shopify Webhook & API Transaction Record
+                          </h3>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                              selectedShopifyLog.status === "SUCCESS"
+                                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                : selectedShopifyLog.status === "RATE_LIMITED"
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : selectedShopifyLog.status === "IGNORED"
+                                ? "bg-slate-800 text-slate-300 border border-slate-700"
+                                : "bg-red-500/20 text-red-300 border border-red-500/30"
+                            }`}
+                          >
+                            {selectedShopifyLog.statusCode || 200} {selectedShopifyLog.status}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                            {selectedShopifyLog.apiType}
+                          </span>
+                          {selectedShopifyLog.durationMs !== null && (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-slate-800 text-slate-300 border border-slate-700">
+                              ⚡ {selectedShopifyLog.durationMs}ms
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
+                          <span>ID: {selectedShopifyLog.id}</span>
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(selectedShopifyLog.id, "shopify_id")}
+                            className="text-[10px] text-slate-400 hover:text-purple-400 underline transition"
+                          >
+                            {copiedKey === "shopify_id" ? "Copied! ✓" : "Copy ID"}
+                          </button>
+                        </div>
                       </div>
+
                       <button
                         type="button"
-                        onClick={() => setSelectedShopifyLog(null)}
-                        className="text-slate-400 hover:text-white text-base"
+                        onClick={() => {
+                          setSelectedShopifyLog(null);
+                          setShopifyInspectTab("OVERVIEW");
+                        }}
+                        className="text-slate-400 hover:text-white text-lg p-1 hover:bg-slate-800 rounded-lg transition"
                       >
                         ✕
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px] font-mono">
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">TIMESTAMP</span>
-                        <span className="text-white">{new Date(selectedShopifyLog.createdAt).toLocaleString()}</span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">INITIATED BY</span>
-                        <span className="text-white">{selectedShopifyLog.initiatedBy || "SHOPIFY_WEBHOOK"}</span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">STATUS</span>
-                        <span className="text-emerald-400 font-semibold">{selectedShopifyLog.statusCode} ({selectedShopifyLog.status})</span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
-                        <span className="text-slate-500 block text-[10px]">LATENCY</span>
-                        <span className="text-slate-200">{selectedShopifyLog.durationMs}ms</span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          Store Domain
-                        </label>
-                        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-white">
-                          {selectedShopifyLog.shop || selectedShopifyLog.merchant?.shop || "Global"}
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          Topic / Endpoint & Type
-                        </label>
-                        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-emerald-300">
-                          {selectedShopifyLog.apiType} ({selectedShopifyLog.httpMethod}) : {selectedShopifyLog.topic}
-                        </div>
-                      </div>
-                    </div>
-
-                    {selectedShopifyLog.webhookId && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          X-Shopify-Webhook-Id
-                        </label>
-                        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-purple-300">
-                          {selectedShopifyLog.webhookId}
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedShopifyLog.requestPayload && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          Sanitized Webhook Body / GraphQL Payload
-                        </label>
-                        <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-48">
-                          {selectedShopifyLog.requestPayload}
-                        </pre>
-                      </div>
-                    )}
-
-                    {selectedShopifyLog.responseBody && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                          Response Body / Results
-                        </label>
-                        <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-48">
-                          {selectedShopifyLog.responseBody}
-                        </pre>
-                      </div>
-                    )}
-
-                    {selectedShopifyLog.errorMessage && (
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-red-400 mb-1">
-                          Error Details
-                        </label>
-                        <div className="p-2 rounded-lg bg-red-950/20 border border-red-800/40 font-mono text-xs text-red-300">
-                          {selectedShopifyLog.errorMessage}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="pt-2 text-right">
+                    {/* Modal Navigation Tabs */}
+                    <div className="flex items-center gap-1.5 border-b border-slate-800 pb-2 text-xs font-medium overflow-x-auto">
                       <button
                         type="button"
-                        onClick={() => setSelectedShopifyLog(null)}
-                        className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium"
+                        onClick={() => setShopifyInspectTab("OVERVIEW")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          shopifyInspectTab === "OVERVIEW"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>📋</span>
+                        <span>DB Fields & Telemetry</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShopifyInspectTab("PAYLOAD")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          shopifyInspectTab === "PAYLOAD"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>📤</span>
+                        <span>Request / Webhook Body {selectedShopifyLog.requestPayload ? `(${selectedShopifyLog.requestPayload.length} B)` : "(Empty)"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShopifyInspectTab("RESPONSE")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          shopifyInspectTab === "RESPONSE"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>📥</span>
+                        <span>Response Body {selectedShopifyLog.responseBody ? `(${selectedShopifyLog.responseBody.length} B)` : "(Empty)"}</span>
+                      </button>
+
+                      {selectedShopifyLog.errorMessage && (
+                        <button
+                          type="button"
+                          onClick={() => setShopifyInspectTab("ERROR")}
+                          className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                            shopifyInspectTab === "ERROR"
+                              ? "bg-red-500/20 text-red-300 border border-red-500/30 font-semibold"
+                              : "text-red-400 hover:text-red-300 hover:bg-red-950/40"
+                          }`}
+                        >
+                          <span>❌</span>
+                          <span>Error Details</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setShopifyInspectTab("RAW_DB")}
+                        className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                          shopifyInspectTab === "RAW_DB"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30 font-semibold"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <span>🗄️</span>
+                        <span>Full DB Row (JSON)</span>
+                      </button>
+                    </div>
+
+                    {/* Modal Tab Body */}
+                    <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                      {/* TAB 1: OVERVIEW & ALL DB FIELDS */}
+                      {shopifyInspectTab === "OVERVIEW" && (
+                        <div className="space-y-4">
+                          {/* Properties Grid */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Shopify Store Domain
+                              </span>
+                              <div className="font-semibold text-white text-xs">
+                                {selectedShopifyLog.merchant?.name || selectedShopifyLog.shop || "Global"}
+                              </div>
+                              <div className="text-[11px] text-purple-400 font-mono">
+                                {selectedShopifyLog.shop || selectedShopifyLog.merchant?.shop || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                API Type & HTTP Method
+                              </span>
+                              <div className="font-semibold text-white text-xs flex items-center gap-1.5">
+                                <span className="px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20 font-mono text-[10px]">
+                                  {selectedShopifyLog.apiType}
+                                </span>
+                                <span className="font-mono text-slate-300">{selectedShopifyLog.httpMethod}</span>
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-mono">{selectedShopifyLog.durationMs}ms duration</div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Initiated By / Trigger
+                              </span>
+                              <div className="font-semibold text-white text-xs">
+                                {selectedShopifyLog.initiatedBy || "SHOPIFY_WEBHOOK"}
+                              </div>
+                              <div className="text-[10px] text-slate-400">Trigger Origin</div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1 sm:col-span-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                  Topic / Operation / Endpoint
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(selectedShopifyLog.topic, "shopify_topic")}
+                                  className="text-[10px] text-slate-400 hover:text-purple-400"
+                                >
+                                  {copiedKey === "shopify_topic" ? "Copied! ✓" : "Copy"}
+                                </button>
+                              </div>
+                              <div className="font-mono text-xs text-purple-300 break-all p-1.5 rounded bg-slate-900 border border-slate-800">
+                                {selectedShopifyLog.topic}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Merchant ID (DB Foreign Key)
+                              </span>
+                              <div className="font-mono text-[11px] text-slate-300 break-all">
+                                {selectedShopifyLog.merchantId || "None (Global)"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                  X-Shopify-Webhook-Id
+                                </span>
+                                {selectedShopifyLog.webhookId && (
+                                  <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(selectedShopifyLog.webhookId || "", "shopify_wbid")}
+                                    className="text-[10px] text-slate-400 hover:text-purple-400"
+                                  >
+                                    {copiedKey === "shopify_wbid" ? "Copied! ✓" : "Copy"}
+                                  </button>
+                                )}
+                              </div>
+                              <div className="font-mono text-xs text-purple-300 break-all">
+                                {selectedShopifyLog.webhookId || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Shopify API Version
+                              </span>
+                              <div className="font-mono text-xs text-slate-300">
+                                {selectedShopifyLog.apiVersion || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Rate Limit Usage Header
+                              </span>
+                              <div className="font-mono text-xs text-amber-300">
+                                {selectedShopifyLog.rateLimitUsage || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Inbound IP Address
+                              </span>
+                              <div className="font-mono text-xs text-slate-300">
+                                {selectedShopifyLog.ipAddress || "—"}
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1 sm:col-span-2">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                                Timestamp Created (Local & UTC)
+                              </span>
+                              <div className="font-mono text-xs text-slate-200">
+                                <div>Local: {new Date(selectedShopifyLog.createdAt).toLocaleString()}</div>
+                                <div className="text-[10px] text-slate-500">ISO: {new Date(selectedShopifyLog.createdAt).toISOString()}</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Quick Payload Preview Blocks */}
+                          {selectedShopifyLog.requestPayload && (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-300">Payload Preview</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setShopifyInspectTab("PAYLOAD")}
+                                  className="text-xs text-purple-400 hover:underline"
+                                >
+                                  View Full Formatted Payload ↗
+                                </button>
+                              </div>
+                              <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-32">
+                                {formatJson(selectedShopifyLog.requestPayload)}
+                              </pre>
+                            </div>
+                          )}
+
+                          {selectedShopifyLog.responseBody && (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-300">Response / Result Preview</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setShopifyInspectTab("RESPONSE")}
+                                  className="text-xs text-purple-400 hover:underline"
+                                >
+                                  View Full Formatted Response ↗
+                                </button>
+                              </div>
+                              <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-32">
+                                {formatJson(selectedShopifyLog.responseBody)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* TAB 2: REQUEST / WEBHOOK BODY */}
+                      {shopifyInspectTab === "PAYLOAD" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-300">
+                              Sanitized Webhook JSON Body / GraphQL Query
+                            </span>
+                            {selectedShopifyLog.requestPayload && (
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(selectedShopifyLog.requestPayload || "", "shopify_req")}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium transition"
+                              >
+                                {copiedKey === "shopify_req" ? "Copied to Clipboard! ✓" : "📋 Copy Payload"}
+                              </button>
+                            )}
+                          </div>
+
+                          {selectedShopifyLog.requestPayload ? (
+                            <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-purple-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all leading-relaxed whitespace-pre-wrap">
+                              {formatJson(selectedShopifyLog.requestPayload)}
+                            </pre>
+                          ) : (
+                            <div className="p-8 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                              No request body payload recorded.
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* TAB 3: RESPONSE BODY */}
+                      {shopifyInspectTab === "RESPONSE" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-300">
+                              Response Body / Execution Handler Results
+                            </span>
+                            {selectedShopifyLog.responseBody && (
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(selectedShopifyLog.responseBody || "", "shopify_res")}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium transition"
+                              >
+                                {copiedKey === "shopify_res" ? "Copied to Clipboard! ✓" : "📋 Copy Response"}
+                              </button>
+                            )}
+                          </div>
+
+                          {selectedShopifyLog.responseBody ? (
+                            <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-cyan-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all leading-relaxed whitespace-pre-wrap">
+                              {formatJson(selectedShopifyLog.responseBody)}
+                            </pre>
+                          ) : (
+                            <div className="p-8 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                              No response body recorded.
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* TAB 4: ERROR DETAILS */}
+                      {shopifyInspectTab === "ERROR" && selectedShopifyLog.errorMessage && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-red-400">
+                              Transaction Exception / Error Stack
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(selectedShopifyLog.errorMessage || "", "shopify_err")}
+                              className="px-2.5 py-1 bg-red-950/40 hover:bg-red-900/50 text-red-300 border border-red-800/40 rounded text-xs font-medium transition"
+                            >
+                              {copiedKey === "shopify_err" ? "Copied! ✓" : "📋 Copy Error"}
+                            </button>
+                          </div>
+
+                          <div className="p-4 rounded-xl bg-red-950/20 border border-red-800/40 text-red-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all whitespace-pre-wrap leading-relaxed">
+                            {selectedShopifyLog.errorMessage}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* TAB 5: RAW DB ROW */}
+                      {shopifyInspectTab === "RAW_DB" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-300">
+                              Complete Prisma DB Entity (JSON)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(JSON.stringify(selectedShopifyLog, null, 2), "shopify_raw")}
+                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium transition"
+                            >
+                              {copiedKey === "shopify_raw" ? "Copied DB Record! ✓" : "📋 Copy Entire Record"}
+                            </button>
+                          </div>
+
+                          <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-mono text-xs overflow-x-auto max-h-[420px] select-all leading-relaxed whitespace-pre-wrap">
+                            {JSON.stringify(selectedShopifyLog, null, 2)}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
+                      <div className="text-[11px] text-slate-500 font-mono">
+                        Table: storeping_ShopifyApiLog
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedShopifyLog(null);
+                          setShopifyInspectTab("OVERVIEW");
+                        }}
+                        className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition"
                       >
                         Close
                       </button>
