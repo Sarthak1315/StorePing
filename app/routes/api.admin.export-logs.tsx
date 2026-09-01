@@ -7,6 +7,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   await requireRole(request, ["SUPER_ADMIN"]);
   const url = new URL(request.url);
 
+  const logType = url.searchParams.get("type") || "meta"; // "meta" | "shopify"
   const range = url.searchParams.get("range") || "all";
   const startDate = url.searchParams.get("startDate");
   const endDate = url.searchParams.get("endDate");
@@ -34,6 +35,79 @@ export async function loader({ request }: LoaderFunctionArgs) {
     dateFilter = { gte: new Date(startDate) };
   }
 
+  const escapeCsv = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  if (logType === "shopify") {
+    const exportLogs = await db.shopifyApiLog.findMany({
+      where: {
+        ...(Object.keys(dateFilter).length > 0 ? { createdAt: dateFilter } : {}),
+        ...(status && status !== "ALL" ? { status } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        merchant: {
+          select: { shop: true, name: true },
+        },
+      },
+    });
+
+    const headers = [
+      "Log ID",
+      "Timestamp (UTC)",
+      "Timestamp (Local ISO)",
+      "Initiated By / Trigger",
+      "Store Domain",
+      "Topic / Endpoint",
+      "API Type",
+      "HTTP Method",
+      "HTTP Status Code",
+      "Status",
+      "Latency (ms)",
+      "Webhook ID",
+      "API Version",
+      "Rate Limit Usage Header",
+      "Error Message",
+      "Request Payload",
+      "Response Body",
+    ];
+
+    const rows = exportLogs.map((log) => [
+      escapeCsv(log.id),
+      escapeCsv(log.createdAt.toUTCString()),
+      escapeCsv(log.createdAt.toISOString()),
+      escapeCsv(log.initiatedBy || "SHOPIFY_WEBHOOK"),
+      escapeCsv(log.shop || log.merchant?.shop || "Unknown"),
+      escapeCsv(log.topic),
+      escapeCsv(log.apiType),
+      escapeCsv(log.httpMethod),
+      escapeCsv(log.statusCode || ""),
+      escapeCsv(log.status),
+      escapeCsv(log.durationMs || ""),
+      escapeCsv(log.webhookId || ""),
+      escapeCsv(log.apiVersion || ""),
+      escapeCsv(log.rateLimitUsage || ""),
+      escapeCsv(log.errorMessage || ""),
+      escapeCsv(log.requestPayload || ""),
+      escapeCsv(log.responseBody || ""),
+    ]);
+
+    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+    const filename = `StorePing_Shopify_API_Logs_${new Date().toISOString().slice(0, 10)}.csv`;
+
+    return new Response(csvContent, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+      },
+    });
+  }
+
+  // Default: Meta WhatsApp API & Webhook logs
   const exportLogs = await db.metaApiLog.findMany({
     where: {
       ...(Object.keys(dateFilter).length > 0 ? { createdAt: dateFilter } : {}),
@@ -64,12 +138,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
     "Request Payload",
     "Response Body",
   ];
-
-  const escapeCsv = (val: any) => {
-    if (val === null || val === undefined) return '""';
-    const str = String(val).replace(/"/g, '""');
-    return `"${str}"`;
-  };
 
   const rows = exportLogs.map((log) => [
     escapeCsv(log.id),

@@ -2,11 +2,18 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { eraseUserData } from "../utils/dpdp.server";
 import { logInfo } from "../utils/logger.server";
+import { logShopifyApiCall } from "../utils/shopify-audit.server";
 import db from "../db.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const startTime = Date.now();
+  let shop = "";
+  let topic = "GDPR_PRIVACY";
+
   try {
-    const { shop, payload, topic } = await authenticate.webhook(request);
+    const auth = await authenticate.webhook(request);
+    shop = auth.shop;
+    topic = auth.topic;
 
     await logInfo(`Shopify GDPR Webhook received: ${topic}`, {
       shop,
@@ -14,7 +21,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       details: { topic },
     });
 
-    const body = payload as any;
+    const body = auth.payload as any;
 
     switch (topic) {
       case "CUSTOMERS_DATA_REQUEST": {
@@ -22,7 +29,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           shop,
           source: "gdpr",
         });
-        return new Response("Customer data request received", { status: 200 });
+        break;
       }
 
       case "CUSTOMERS_REDACT": {
@@ -33,18 +40,46 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             data: { customerName: "[REDACTED]", recipientPhone: "[REDACTED]" },
           });
         }
-        return new Response("Customer data redacted", { status: 200 });
+        break;
       }
 
       case "SHOP_REDACT": {
         await eraseUserData(shop);
-        return new Response("Shop data erased", { status: 200 });
+        break;
       }
 
       default:
-        return new Response("Webhook received", { status: 200 });
+        break;
     }
+
+    const durationMs = Date.now() - startTime;
+    await logShopifyApiCall({
+      shop: shop || "unknown",
+      topic: topic || "GDPR_PRIVACY",
+      apiType: "WEBHOOK",
+      httpMethod: "POST",
+      statusCode: 200,
+      durationMs,
+      status: "SUCCESS",
+      requestPayload: auth.payload,
+      responseBody: { success: true, topic },
+      initiatedBy: "SHOPIFY_WEBHOOK",
+    });
+
+    return new Response("Webhook processed", { status: 200 });
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    await logShopifyApiCall({
+      shop: shop || "unknown",
+      topic: topic || "GDPR_PRIVACY",
+      apiType: "WEBHOOK",
+      httpMethod: "POST",
+      statusCode: 500,
+      durationMs,
+      status: "FAILED",
+      errorMessage: err?.message || String(err),
+      initiatedBy: "SHOPIFY_WEBHOOK",
+    });
     console.warn("Privacy webhook notice:", err);
     return new Response("Privacy webhook handled", { status: 200 });
   }

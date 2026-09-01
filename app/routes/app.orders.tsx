@@ -32,6 +32,7 @@ import { seedDefaultTemplates } from "../utils/template.server";
 import { interpolateVariables } from "../utils/template.shared";
 import { syncOrderUpdateToShopify } from "../utils/shopify-order.server";
 import { enqueueJob, processPendingJobs } from "../utils/queue.server";
+import { logShopifyApiCall } from "../utils/shopify-audit.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
@@ -52,6 +53,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const debugErrors: string[] = [];
 
+  const graphqlStartTime = Date.now();
   // Parallel Query Execution: Shopify GraphQL + Database records all fetched concurrently!
   const [ordersRes, confirmations, templates, abandonedCarts] = await Promise.all([
     admin.graphql(`
@@ -123,6 +125,23 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   try {
     const ordersJson = await ordersRes.json();
+    const durationMs = Date.now() - graphqlStartTime;
+
+    await logShopifyApiCall({
+      merchantId: merchant.id,
+      shop,
+      topic: "admin/graphql:getOrdersForWhatsApp",
+      apiType: "GRAPHQL",
+      httpMethod: "GRAPHQL",
+      statusCode: ordersJson.errors && ordersJson.errors.length > 0 ? 400 : 200,
+      durationMs,
+      status: ordersJson.errors && ordersJson.errors.length > 0 ? "FAILED" : "SUCCESS",
+      requestPayload: { query: "orders(first: 50, sortKey: CREATED_AT, reverse: true)" },
+      responseBody: { count: ordersJson.data?.orders?.nodes?.length || 0 },
+      errorMessage: ordersJson.errors?.map((e: any) => e.message).join(", "),
+      initiatedBy: "APP_ORDERS_LOADER",
+    });
+
     if (ordersJson.errors && ordersJson.errors.length > 0) {
       debugErrors.push(`Orders query: ${ordersJson.errors.map((e: any) => e.message).join(", ")}`);
     }

@@ -34,6 +34,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     callsPerMerchant1h,
     platformSettings,
     platformBilling,
+    shopifyLogs,
+    totalShopifyLogs,
+    shopifyLogs24h,
+    failedShopifyLogs,
+    rateLimitedShopifyLogs,
   ] = await Promise.all([
     db.user.findMany({
       where: { approvalStatus: "PENDING" },
@@ -54,6 +59,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             orderConfirmations: true,
             cartRecoveries: true,
             apiLogs: true,
+            shopifyApiLogs: true,
           },
         },
       },
@@ -118,6 +124,25 @@ export async function loader({ request }: LoaderFunctionArgs) {
     }),
     getPlatformSettings(),
     getGlobalPlatformBillingSummary(),
+    db.shopifyApiLog.findMany({
+      take: 100,
+      orderBy: { createdAt: "desc" },
+      include: {
+        merchant: {
+          select: { shop: true, name: true },
+        },
+      },
+    }),
+    db.shopifyApiLog.count(),
+    db.shopifyApiLog.count({
+      where: { createdAt: { gte: twentyFourHoursAgo } },
+    }),
+    db.shopifyApiLog.count({
+      where: { status: "FAILED" },
+    }),
+    db.shopifyApiLog.count({
+      where: { status: "RATE_LIMITED" },
+    }),
   ]);
 
   const activeWabas = allStores.filter((s) => s.isWhatsAppConnected).length;
@@ -168,6 +193,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const successCount = totalApiCalls - failedApiCalls;
   const apiSuccessRate = totalApiCalls > 0 ? Math.round((successCount / totalApiCalls) * 100) : 100;
 
+  const shopifySuccessCount = totalShopifyLogs - failedShopifyLogs;
+  const shopifySuccessRate = totalShopifyLogs > 0 ? Math.round((shopifySuccessCount / totalShopifyLogs) * 100) : 100;
+
   // Store-level WABA rate limit & 24h tier breakdown
   const storeWabaBreakdown = allStores.map((store) => {
     const calls60m = merchantHourlyCallMap.get(store.id) || 0;
@@ -197,6 +225,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     allUsers,
     recentJobs,
     apiLogs,
+    shopifyLogs,
     platformSettings,
     platformBilling,
     apiStats: {
@@ -205,6 +234,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       rateLimitedCalls,
       failedApiCalls,
       apiSuccessRate,
+    },
+    shopifyStats: {
+      totalShopifyLogs,
+      shopifyLogs24h,
+      failedShopifyLogs,
+      rateLimitedShopifyLogs,
+      shopifySuccessRate,
     },
     rateLimitStats: {
       appId: "1083822394035933",
@@ -350,7 +386,9 @@ export default function SuperAdminDashboard() {
     allUsers,
     recentJobs,
     apiLogs,
+    shopifyLogs,
     apiStats,
+    shopifyStats,
     rateLimitStats,
     storeWabaBreakdown,
     platformSettings,
@@ -380,13 +418,17 @@ export default function SuperAdminDashboard() {
   const [showRateLimitDetails, setShowRateLimitDetails] = useState(false);
 
   // API Logs Filter States
+  const [logPlatform, setLogPlatform] = useState<"META" | "SHOPIFY">("META");
   const [apiSearch, setApiSearch] = useState("");
   const [apiStatusFilter, setApiStatusFilter] = useState("ALL");
   const [apiMethodFilter, setApiMethodFilter] = useState("ALL");
+  const [shopifyApiTypeFilter, setShopifyApiTypeFilter] = useState("ALL");
   const [selectedApiLog, setSelectedApiLog] = useState<(typeof apiLogs)[number] | null>(null);
+  const [selectedShopifyLog, setSelectedShopifyLog] = useState<(typeof shopifyLogs)[number] | null>(null);
 
   // Export Modal State
   const [showExportModal, setShowExportModal] = useState(false);
+  const [exportLogType, setExportLogType] = useState<"meta" | "shopify">("meta");
   const [exportRangePreset, setExportRangePreset] = useState("1m");
   const [exportStartDate, setExportStartDate] = useState("");
   const [exportEndDate, setExportEndDate] = useState("");
@@ -430,7 +472,7 @@ export default function SuperAdminDashboard() {
     return matchesSearch && matchesPlan;
   });
 
-  // Filtered API Logs
+  // Filtered Meta API Logs
   const filteredApiLogs = apiLogs.filter((log) => {
     const query = apiSearch.toLowerCase();
     const matchesSearch =
@@ -447,7 +489,26 @@ export default function SuperAdminDashboard() {
     return matchesSearch && matchesStatus && matchesMethod;
   });
 
-  const exportDownloadUrl = `/api/admin/export-logs?range=${exportRangePreset}${
+  // Filtered Shopify API & Webhook Logs
+  const filteredShopifyLogs = shopifyLogs.filter((log) => {
+    const query = apiSearch.toLowerCase();
+    const matchesSearch =
+      log.topic.toLowerCase().includes(query) ||
+      (log.initiatedBy && log.initiatedBy.toLowerCase().includes(query)) ||
+      (log.shop && log.shop.toLowerCase().includes(query)) ||
+      (log.merchant?.name && log.merchant.name.toLowerCase().includes(query)) ||
+      (log.webhookId && log.webhookId.toLowerCase().includes(query)) ||
+      (log.errorMessage && log.errorMessage.toLowerCase().includes(query)) ||
+      (log.statusCode && log.statusCode.toString().includes(query));
+
+    const matchesStatus = apiStatusFilter === "ALL" || log.status === apiStatusFilter;
+    const matchesMethod = apiMethodFilter === "ALL" || log.httpMethod === apiMethodFilter;
+    const matchesApiType = shopifyApiTypeFilter === "ALL" || log.apiType === shopifyApiTypeFilter;
+
+    return matchesSearch && matchesStatus && matchesMethod && matchesApiType;
+  });
+
+  const exportDownloadUrl = `/api/admin/export-logs?type=${exportLogType}&range=${exportRangePreset}${
     exportRangePreset === "custom" && exportStartDate ? `&startDate=${exportStartDate}` : ""
   }${exportRangePreset === "custom" && exportEndDate ? `&endDate=${exportEndDate}` : ""}&status=${exportStatus}`;
 
@@ -1144,27 +1205,100 @@ export default function SuperAdminDashboard() {
             </div>
           )}
 
-          {/* SECTION 4: META API LOGS & TELEMETRY */}
+          {/* SECTION 4: API LOGS & WEBHOOK TELEMETRY (META & SHOPIFY) */}
           {activeSection === "API_LOGS" && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase">24-Hour Calls</div>
-                  <div className="text-base font-bold text-white font-mono mt-0.5">{apiStats.apiCalls24h}</div>
+              {/* Platform Switcher Tabs & Export Button */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLogPlatform("META");
+                      setSelectedApiLog(null);
+                      setSelectedShopifyLog(null);
+                    }}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                      logPlatform === "META"
+                        ? "bg-emerald-500 text-slate-950 shadow-sm"
+                        : "bg-slate-950 text-slate-400 border border-slate-800 hover:text-white hover:bg-slate-800/60"
+                    }`}
+                  >
+                    <span>🟢</span>
+                    <span>Meta WhatsApp Cloud API ({apiLogs.length})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLogPlatform("SHOPIFY");
+                      setSelectedApiLog(null);
+                      setSelectedShopifyLog(null);
+                    }}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                      logPlatform === "SHOPIFY"
+                        ? "bg-emerald-500 text-slate-950 shadow-sm"
+                        : "bg-slate-950 text-slate-400 border border-slate-800 hover:text-white hover:bg-slate-800/60"
+                    }`}
+                  >
+                    <span>🛍️</span>
+                    <span>Shopify Webhooks & GraphQL ({shopifyLogs.length})</span>
+                  </button>
                 </div>
-                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase">Success Rate</div>
-                  <div className="text-base font-bold text-emerald-400 font-mono mt-0.5">{apiStats.apiSuccessRate}%</div>
-                </div>
-                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase">Rate Limited (429)</div>
-                  <div className="text-base font-bold text-amber-300 font-mono mt-0.5">{apiStats.rateLimitedCalls}</div>
-                </div>
-                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase">Failed Calls</div>
-                  <div className="text-base font-bold text-red-400 font-mono mt-0.5">{apiStats.failedApiCalls}</div>
-                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportLogType(logPlatform === "META" ? "meta" : "shopify");
+                    setShowExportModal(true);
+                  }}
+                  className="px-3.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center gap-1.5"
+                >
+                  <span>📊</span>
+                  <span>Export CSV Logs</span>
+                </button>
               </div>
+
+              {/* Telemetry Metric Cards */}
+              {logPlatform === "META" ? (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">24-Hour Meta Calls</div>
+                    <div className="text-base font-bold text-white font-mono mt-0.5">{apiStats.apiCalls24h}</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Success Rate</div>
+                    <div className="text-base font-bold text-emerald-400 font-mono mt-0.5">{apiStats.apiSuccessRate}%</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Rate Limited (429)</div>
+                    <div className="text-base font-bold text-amber-300 font-mono mt-0.5">{apiStats.rateLimitedCalls}</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Failed Calls</div>
+                    <div className="text-base font-bold text-red-400 font-mono mt-0.5">{apiStats.failedApiCalls}</div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">24-Hour Shopify Ops</div>
+                    <div className="text-base font-bold text-white font-mono mt-0.5">{shopifyStats.shopifyLogs24h}</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Success Rate</div>
+                    <div className="text-base font-bold text-emerald-400 font-mono mt-0.5">{shopifyStats.shopifySuccessRate}%</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Rate Limited</div>
+                    <div className="text-base font-bold text-amber-300 font-mono mt-0.5">{shopifyStats.rateLimitedShopifyLogs}</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Failed Webhooks</div>
+                    <div className="text-base font-bold text-red-400 font-mono mt-0.5">{shopifyStats.failedShopifyLogs}</div>
+                  </div>
+                </div>
+              )}
 
               {/* Search & Filter Bar */}
               <div className="flex flex-wrap items-center gap-2.5 pt-1">
@@ -1177,7 +1311,22 @@ export default function SuperAdminDashboard() {
                   <option value="SUCCESS">✅ SUCCESS</option>
                   <option value="RATE_LIMITED">⚠️ RATE_LIMITED (429)</option>
                   <option value="FAILED">❌ FAILED</option>
+                  {logPlatform === "SHOPIFY" && <option value="IGNORED">⚪ IGNORED</option>}
                 </select>
+
+                {logPlatform === "SHOPIFY" && (
+                  <select
+                    value={shopifyApiTypeFilter}
+                    onChange={(e) => setShopifyApiTypeFilter(e.target.value)}
+                    className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-slate-600"
+                  >
+                    <option value="ALL">All API Types</option>
+                    <option value="WEBHOOK">🪝 WEBHOOK</option>
+                    <option value="GRAPHQL">⚡ GRAPHQL</option>
+                    <option value="REST">🌐 REST</option>
+                    <option value="OAUTH">🔐 OAUTH</option>
+                  </select>
+                )}
 
                 <select
                   value={apiMethodFilter}
@@ -1187,6 +1336,7 @@ export default function SuperAdminDashboard() {
                   <option value="ALL">All HTTP Methods</option>
                   <option value="POST">POST</option>
                   <option value="GET">GET</option>
+                  <option value="GRAPHQL">GRAPHQL</option>
                   <option value="DELETE">DELETE</option>
                 </select>
 
@@ -1195,90 +1345,180 @@ export default function SuperAdminDashboard() {
                     type="text"
                     value={apiSearch}
                     onChange={(e) => setApiSearch(e.target.value)}
-                    placeholder="Search endpoint, user, message ID, status code..."
+                    placeholder={
+                      logPlatform === "META"
+                        ? "Search endpoint, user, message ID, status code..."
+                        : "Search topic, store, webhook ID, error, status code..."
+                    }
                     className="w-full pl-7 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-slate-600"
                   />
                   <span className="absolute left-2.5 top-2 text-[10px] text-slate-500">🔍</span>
                 </div>
               </div>
 
-              {/* Logs Table */}
-              {filteredApiLogs.length === 0 ? (
-                <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
-                  No Meta API audit records matching filter criteria.
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-400 font-medium">
-                        <th className="pb-2.5">Timestamp</th>
-                        <th className="pb-2.5">Initiated By / Trigger</th>
-                        <th className="pb-2.5">Store</th>
-                        <th className="pb-2.5">Method & Endpoint</th>
-                        <th className="pb-2.5">Status</th>
-                        <th className="pb-2.5">Latency</th>
-                        <th className="pb-2.5 text-right">Details</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                      {filteredApiLogs.map((log) => (
-                        <tr key={log.id} className="hover:bg-slate-800/30 transition">
-                          <td className="py-3 text-slate-400 whitespace-nowrap">
-                            <div>{new Date(log.createdAt).toLocaleDateString()}</div>
-                            <div className="text-[10px] text-slate-500">
-                              {new Date(log.createdAt).toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                second: "2-digit",
-                              })}
-                            </div>
-                          </td>
-                          <td className="py-3 text-white font-sans font-medium">
-                            {log.initiatedBy || "System"}
-                          </td>
-                          <td className="py-3 text-slate-300 font-sans">
-                            {log.merchant?.shop || "Global"}
-                          </td>
-                          <td className="py-3">
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 bg-slate-800 text-slate-300 border border-slate-700">
-                              {log.httpMethod}
-                            </span>
-                            <span className="text-slate-300 font-mono">{log.endpoint}</span>
-                          </td>
-                          <td className="py-3">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                log.status === "SUCCESS"
-                                  ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                                  : log.status === "RATE_LIMITED"
-                                  ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
-                                  : "bg-red-500/10 text-red-400 border border-red-500/20"
-                              }`}
-                            >
-                              {log.statusCode || (log.status === "SUCCESS" ? 200 : 500)} {log.status}
-                            </span>
-                          </td>
-                          <td className="py-3 text-slate-400">
-                            {log.durationMs ? `${log.durationMs}ms` : "—"}
-                          </td>
-                          <td className="py-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedApiLog(log)}
-                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-sans font-medium transition"
-                            >
-                              Inspect 🔍
-                            </button>
-                          </td>
+              {/* Logs Table: META */}
+              {logPlatform === "META" && (
+                filteredApiLogs.length === 0 ? (
+                  <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                    No Meta API audit records matching filter criteria.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                          <th className="pb-2.5">Timestamp</th>
+                          <th className="pb-2.5">Initiated By / Trigger</th>
+                          <th className="pb-2.5">Store</th>
+                          <th className="pb-2.5">Method & Endpoint</th>
+                          <th className="pb-2.5">Status</th>
+                          <th className="pb-2.5">Latency</th>
+                          <th className="pb-2.5 text-right">Details</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                        {filteredApiLogs.map((log) => (
+                          <tr key={log.id} className="hover:bg-slate-800/30 transition">
+                            <td className="py-3 text-slate-400 whitespace-nowrap">
+                              <div>{new Date(log.createdAt).toLocaleDateString()}</div>
+                              <div className="text-[10px] text-slate-500">
+                                {new Date(log.createdAt).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                })}
+                              </div>
+                            </td>
+                            <td className="py-3 text-white font-sans font-medium">
+                              {log.initiatedBy || "System"}
+                            </td>
+                            <td className="py-3 text-slate-300 font-sans">
+                              {log.merchant?.shop || "Global"}
+                            </td>
+                            <td className="py-3">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 bg-slate-800 text-slate-300 border border-slate-700">
+                                {log.httpMethod}
+                              </span>
+                              <span className="text-slate-300 font-mono">{log.endpoint}</span>
+                            </td>
+                            <td className="py-3">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                  log.status === "SUCCESS"
+                                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                    : log.status === "RATE_LIMITED"
+                                    ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                                    : "bg-red-500/10 text-red-400 border border-red-500/20"
+                                }`}
+                              >
+                                {log.statusCode || (log.status === "SUCCESS" ? 200 : 500)} {log.status}
+                              </span>
+                            </td>
+                            <td className="py-3 text-slate-400">
+                              {log.durationMs ? `${log.durationMs}ms` : "—"}
+                            </td>
+                            <td className="py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedApiLog(log)}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-sans font-medium transition"
+                              >
+                                Inspect 🔍
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
               )}
 
-              {/* Transaction JSON Inspector Modal */}
+              {/* Logs Table: SHOPIFY */}
+              {logPlatform === "SHOPIFY" && (
+                filteredShopifyLogs.length === 0 ? (
+                  <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                    No Shopify API / Webhook audit records matching filter criteria.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                          <th className="pb-2.5">Timestamp</th>
+                          <th className="pb-2.5">Initiated By / Trigger</th>
+                          <th className="pb-2.5">Store Domain</th>
+                          <th className="pb-2.5">Type & Topic / Query</th>
+                          <th className="pb-2.5">Status</th>
+                          <th className="pb-2.5">Latency</th>
+                          <th className="pb-2.5 text-right">Details</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                        {filteredShopifyLogs.map((log) => (
+                          <tr key={log.id} className="hover:bg-slate-800/30 transition">
+                            <td className="py-3 text-slate-400 whitespace-nowrap">
+                              <div>{new Date(log.createdAt).toLocaleDateString()}</div>
+                              <div className="text-[10px] text-slate-500">
+                                {new Date(log.createdAt).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                })}
+                              </div>
+                            </td>
+                            <td className="py-3 text-white font-sans font-medium">
+                              {log.initiatedBy || "SHOPIFY_WEBHOOK"}
+                            </td>
+                            <td className="py-3 text-slate-300 font-sans">
+                              {log.shop || log.merchant?.shop || "Global"}
+                            </td>
+                            <td className="py-3">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 ${
+                                log.apiType === "WEBHOOK" 
+                                  ? "bg-purple-500/10 text-purple-300 border border-purple-500/20" 
+                                  : "bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                              }`}>
+                                {log.apiType}
+                              </span>
+                              <span className="text-slate-300 font-mono">{log.topic}</span>
+                            </td>
+                            <td className="py-3">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                  log.status === "SUCCESS"
+                                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                    : log.status === "RATE_LIMITED"
+                                    ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                                    : log.status === "IGNORED"
+                                    ? "bg-slate-800 text-slate-400 border border-slate-700"
+                                    : "bg-red-500/10 text-red-400 border border-red-500/20"
+                                }`}
+                              >
+                                {log.statusCode || 200} {log.status}
+                              </span>
+                            </td>
+                            <td className="py-3 text-slate-400">
+                              {log.durationMs ? `${log.durationMs}ms` : "—"}
+                            </td>
+                            <td className="py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedShopifyLog(log)}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-sans font-medium transition"
+                              >
+                                Inspect 🔍
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              )}
+
+              {/* Meta Transaction JSON Inspector Modal */}
               {selectedApiLog && (
                 <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
@@ -1383,6 +1623,122 @@ export default function SuperAdminDashboard() {
                 </div>
               )}
 
+              {/* Shopify Transaction JSON Inspector Modal */}
+              {selectedShopifyLog && (
+                <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">🛍️</span>
+                        <h3 className="font-bold text-white text-sm">
+                          Shopify Webhook & API Transaction Inspection
+                        </h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedShopifyLog(null)}
+                        className="text-slate-400 hover:text-white text-base"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px] font-mono">
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                        <span className="text-slate-500 block text-[10px]">TIMESTAMP</span>
+                        <span className="text-white">{new Date(selectedShopifyLog.createdAt).toLocaleString()}</span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                        <span className="text-slate-500 block text-[10px]">INITIATED BY</span>
+                        <span className="text-white">{selectedShopifyLog.initiatedBy || "SHOPIFY_WEBHOOK"}</span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                        <span className="text-slate-500 block text-[10px]">STATUS</span>
+                        <span className="text-emerald-400 font-semibold">{selectedShopifyLog.statusCode} ({selectedShopifyLog.status})</span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                        <span className="text-slate-500 block text-[10px]">LATENCY</span>
+                        <span className="text-slate-200">{selectedShopifyLog.durationMs}ms</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                          Store Domain
+                        </label>
+                        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-white">
+                          {selectedShopifyLog.shop || selectedShopifyLog.merchant?.shop || "Global"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                          Topic / Endpoint & Type
+                        </label>
+                        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-emerald-300">
+                          {selectedShopifyLog.apiType} ({selectedShopifyLog.httpMethod}) : {selectedShopifyLog.topic}
+                        </div>
+                      </div>
+                    </div>
+
+                    {selectedShopifyLog.webhookId && (
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                          X-Shopify-Webhook-Id
+                        </label>
+                        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-purple-300">
+                          {selectedShopifyLog.webhookId}
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedShopifyLog.requestPayload && (
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                          Sanitized Webhook Body / GraphQL Payload
+                        </label>
+                        <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-48">
+                          {selectedShopifyLog.requestPayload}
+                        </pre>
+                      </div>
+                    )}
+
+                    {selectedShopifyLog.responseBody && (
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                          Response Body / Results
+                        </label>
+                        <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-48">
+                          {selectedShopifyLog.responseBody}
+                        </pre>
+                      </div>
+                    )}
+
+                    {selectedShopifyLog.errorMessage && (
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-red-400 mb-1">
+                          Error Details
+                        </label>
+                        <div className="p-2 rounded-lg bg-red-950/20 border border-red-800/40 font-mono text-xs text-red-300">
+                          {selectedShopifyLog.errorMessage}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="pt-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedShopifyLog(null)}
+                        className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Export to Excel / CSV Modal */}
               {showExportModal && (
                 <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1392,7 +1748,7 @@ export default function SuperAdminDashboard() {
                         <span className="text-base">📊</span>
                         <div>
                           <h3 className="font-bold text-white text-sm">
-                            Export Meta API Audit Logs
+                            Export API & Webhook Audit Logs
                           </h3>
                           <p className="text-xs text-slate-400">
                             Download Excel (.CSV) spreadsheet with complete audit parameters.
@@ -1406,6 +1762,45 @@ export default function SuperAdminDashboard() {
                       >
                         ✕
                       </button>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-semibold text-slate-300">
+                        Select Log Source
+                      </label>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setExportLogType("meta")}
+                          className={`p-2.5 rounded-lg border font-medium transition text-left flex items-center gap-2 ${
+                            exportLogType === "meta"
+                              ? "bg-slate-800 text-white border-emerald-500/60 shadow-sm"
+                              : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800/60"
+                          }`}
+                        >
+                          <span>🟢</span>
+                          <div>
+                            <div className="font-bold text-white">Meta WhatsApp Logs</div>
+                            <div className="text-[10px] text-slate-400">Cloud API & Webhooks</div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setExportLogType("shopify")}
+                          className={`p-2.5 rounded-lg border font-medium transition text-left flex items-center gap-2 ${
+                            exportLogType === "shopify"
+                              ? "bg-slate-800 text-white border-emerald-500/60 shadow-sm"
+                              : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800/60"
+                          }`}
+                        >
+                          <span>🛍️</span>
+                          <div>
+                            <div className="font-bold text-white">Shopify Audit Logs</div>
+                            <div className="text-[10px] text-slate-400">Webhooks & GraphQL</div>
+                          </div>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="space-y-1.5">

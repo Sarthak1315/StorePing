@@ -106,6 +106,7 @@ model Merchant {
   users                  User[]
   invitations            TeamInvitation[]
   apiLogs                MetaApiLog[]
+  shopifyApiLogs         ShopifyApiLog[]
 
   @@map("storeping_Merchant")
 }
@@ -397,4 +398,36 @@ model PlatformSetting {
   updatedAt       DateTime @updatedAt
 
   @@map("storeping_PlatformSetting")
+}
+
+// 14. Shopify Admin GraphQL, REST & Webhook Audit Log
+model ShopifyApiLog {
+  id             String    @id @default(uuid())
+  merchantId     String?
+  merchant       Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop           String    // e.g. "everon-store.myshopify.com"
+  topic          String    // e.g. "orders/create", "fulfillments/update", "admin/graphql:orderUpdate"
+  apiType        String    @default("WEBHOOK") // "WEBHOOK", "GRAPHQL", "REST", "OAUTH"
+  httpMethod     String    @default("POST") // POST, GET, GRAPHQL
+  statusCode     Int?      // 200, 201, 400, 429, 500, etc.
+  durationMs     Int?      // Execution duration in ms
+  status         String    @default("SUCCESS") // SUCCESS, FAILED, RATE_LIMITED, IGNORED
+  webhookId      String?   // X-Shopify-Webhook-Id header
+  apiVersion     String?   // e.g. "2025-01"
+  requestPayload String?   @db.Text // Sanitized webhook body or GraphQL query/variables
+  responseBody   String?   @db.Text // Response or error message
+  rateLimitUsage String?   // X-Shopify-Shop-Api-Call-Limit header
+  initiatedBy    String?   // "SHOPIFY_WEBHOOK", "SYSTEM", "MANUAL_MERCHANT", "APP_ORDERS"
+  ipAddress      String?
+  errorMessage   String?   @db.Text
+  
+  createdAt      DateTime  @default(now())
+
+  @@index([merchantId, createdAt])
+  @@index([shop, createdAt])
+  @@index([status])
+  @@index([topic])
+  @@index([apiType])
+  @@index([createdAt])
+  @@map("storeping_ShopifyApiLog")
 }

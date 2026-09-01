@@ -12,6 +12,7 @@ export interface JobPayload {
   templateVariables: Record<string, string | undefined>;
   checkoutToken?: string; // For cart recovery cancellation checks
   orderId?: string;
+  orderNumber?: string;
 }
 
 /**

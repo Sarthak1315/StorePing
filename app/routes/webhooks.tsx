@@ -4,6 +4,7 @@ import db from "../db.server";
 import { enqueueJob, cancelCartRecoveryJobs, processPendingJobs } from "../utils/queue.server";
 import { normalizePhoneNumber } from "../utils/phone.utils";
 import { logInfo, logWarn } from "../utils/logger.server";
+import { logShopifyApiCall } from "../utils/shopify-audit.server";
 import { action as metaAction, loader as metaLoader } from "./api.meta.webhook";
 
 /**
@@ -64,7 +65,27 @@ export const action = async (args: ActionFunctionArgs) => {
     });
   }
 
+  const startTime = Date.now();
+  const webhookId = request.headers.get("x-shopify-webhook-id") || request.headers.get("X-Shopify-Webhook-Id");
+  const apiVersion = request.headers.get("x-shopify-api-version") || request.headers.get("X-Shopify-Api-Version") || "2025-01";
+
   if (!merchant.isWhatsAppConnected) {
+    const durationMs = Date.now() - startTime;
+    await logShopifyApiCall({
+      merchantId: merchant.id,
+      shop,
+      topic: normalizedTopic,
+      apiType: "WEBHOOK",
+      httpMethod: "POST",
+      statusCode: 200,
+      durationMs,
+      status: "IGNORED",
+      webhookId,
+      apiVersion,
+      requestPayload: payload,
+      responseBody: { status: "IGNORED", reason: "WhatsApp disconnected" },
+      initiatedBy: "SHOPIFY_WEBHOOK",
+    });
     await logWarn(`Webhook ${normalizedTopic} received for ${shop} but WhatsApp is not connected.`, { shop, source: "webhook" });
     return new Response("Merchant not active or WhatsApp disconnected", { status: 200 });
   }
@@ -198,9 +219,13 @@ export const action = async (args: ActionFunctionArgs) => {
         break;
       }
 
-      // 🧾 Order Placed (Storefront or Admin Draft Order)
+      // 📦 Order Created -> Cancel cart recovery & Trigger Order / COD Address Confirmation
       case "ORDERS_CREATE": {
-        // 1. Instantly cancel any abandoned cart jobs for this checkout
+        const orderId = String(data.id);
+        const rawOrderNum = String(data.order_number || data.name || data.id);
+        const orderNumber = rawOrderNum.startsWith("#") ? rawOrderNum : `#${rawOrderNum}`;
+
+        // Cancel any pending cart recoveries for this customer
         const checkoutToken = data.checkout_token || data.token;
         if (checkoutToken) {
           await cancelCartRecoveryJobs(merchant.id, checkoutToken);
@@ -219,22 +244,16 @@ export const action = async (args: ActionFunctionArgs) => {
           (Array.isArray(data.custom_attributes) ? data.custom_attributes.find((na: any) => na?.name && /phone|mobile|whatsapp/i.test(na.name))?.value : null);
 
         const customerPhone = normalizePhoneNumber(rawCustomerPhone);
-
         if (!customerPhone) {
-          await logInfo(`Order #${data.order_number || data.name} has no customer mobile number attached. Skipped WhatsApp confirmation.`, {
-            shop,
-            source: "webhook",
-          });
+          await logWarn(`Order ${orderNumber} created but no valid phone found across order/shipping/billing/note fields.`, { shop, source: "webhook" });
           break;
         }
 
-        const rawOrderNum = String(data.order_number || data.name || data.id);
-        const orderNumber = rawOrderNum.startsWith("#") ? rawOrderNum : `#${rawOrderNum}`;
-        const customerName = data.customer?.first_name || data.shipping_address?.first_name || "Valued Customer";
-        const totalAmount = parseFloat(data.total_price || "0").toFixed(2);
-        const orderUrl = data.order_status_url || `https://${shop}/account/orders`;
+        const isCOD = (data.payment_gateway_names || []).some(
+          (g: string) => /cash|cod|manual/i.test(g)
+        ) || data.financial_status === "pending";
 
-        // Format Complete Shipping Address
+        const customerName = data.customer?.first_name || data.shipping_address?.first_name || "Customer";
         const addr = data.shipping_address || data.billing_address || {};
         const addressParts = [
           addr.name || customerName,
@@ -245,14 +264,11 @@ export const action = async (args: ActionFunctionArgs) => {
           addr.zip,
           addr.country,
         ].filter(Boolean);
-        const formattedAddress = addressParts.length > 0 ? addressParts.join(", ") : "Customer Shipping Address";
+        const shippingAddress = addressParts.length > 0 ? addressParts.join(", ") : "Customer Delivery Address";
+        const lineItems = (data.line_items || []).map((i: any) => `${i.title} (x${i.quantity})`).join(", ");
+        const totalAmount = parseFloat(data.total_price || "0").toFixed(2);
 
-        // Extract Line Items
-        const itemsSummary = (data.line_items || [])
-          .map((i: any) => `${i.title} (x${i.quantity})`)
-          .join(", ") || "Ordered Items";
-
-        // Create or update OrderConfirmation tracking record
+        // Store OrderConfirmation tracking record
         try {
           await db.orderConfirmation.upsert({
             where: {
@@ -263,25 +279,25 @@ export const action = async (args: ActionFunctionArgs) => {
             },
             create: {
               merchantId: merchant.id,
-              orderId: String(data.id),
+              orderId,
               orderNumber,
               customerPhone,
               customerName,
               totalAmount,
-              currency: data.currency || merchant.currency,
-              shippingAddress: formattedAddress,
-              itemsSummary,
+              currency: data.currency || merchant.currency || "INR",
+              shippingAddress,
+              itemsSummary: lineItems,
               status: "PENDING",
               lastSentAt: new Date(),
             },
             update: {
-              orderId: String(data.id),
+              orderNumber,
               customerPhone,
               customerName,
               totalAmount,
-              currency: data.currency || merchant.currency,
-              shippingAddress: formattedAddress,
-              itemsSummary,
+              currency: data.currency || merchant.currency || "INR",
+              shippingAddress,
+              itemsSummary: lineItems,
               lastSentAt: new Date(),
             },
           });
@@ -289,94 +305,103 @@ export const action = async (args: ActionFunctionArgs) => {
           console.warn("OrderConfirmation record creation notice:", dbErr);
         }
 
-        // Check if merchant has active ORDER_CONFIRM_ADDRESS template
-        const hasAddressTpl = await db.template.findFirst({
-          where: { merchantId: merchant.id, eventType: "ORDER_CONFIRM_ADDRESS", isActive: true },
-        });
+        // Determine event type: COD vs Prepaid
+        const eventType = isCOD && merchant.codVerificationEnabled
+          ? "COD_CONFIRM"
+          : "ORDER_CONFIRM_ADDRESS";
 
-        const targetEventType = hasAddressTpl ? "ORDER_CONFIRM_ADDRESS" : "ORDER_CONFIRM";
-
-        // Enqueue immediate order & address confirmation alert
         await enqueueJob(
           merchant.id,
           "SEND_WHATSAPP",
           {
+            eventType,
             recipientPhone: customerPhone,
             customerName,
-            eventType: targetEventType,
-            orderId: String(data.id),
+            orderId,
+            orderNumber,
             templateVariables: {
               customer_name: customerName,
               order_number: orderNumber.replace(/^#/, ""),
               order_name: orderNumber,
               total_amount: totalAmount,
-              total_price: totalAmount,
-              currency: data.currency || merchant.currency,
-              cart_items: itemsSummary,
-              items: itemsSummary,
-              shipping_address: formattedAddress,
+              currency: data.currency || merchant.currency || "INR",
+              shipping_address: shippingAddress,
+              items: lineItems,
               customer_phone: customerPhone,
-              tracking_url: orderUrl,
               store_name: merchant.name || shop.replace(".myshopify.com", ""),
             },
           },
-          0 // Immediate
+          0 // Immediate 0-delay delivery
         );
 
-        await logInfo(`Enqueued order & address confirmation for Order ${orderNumber} to +${customerPhone}`, { shop, source: "webhook" });
+        await logInfo(`Enqueued ${eventType} notification for Order ${orderNumber} to +${customerPhone}`, { shop, source: "webhook" });
 
-        // Process immediately for instant customer delivery
+        // Process pending jobs immediately in background
         try {
           await processPendingJobs(10);
         } catch (procErr: any) {
-          console.warn("Immediate job processing error:", procErr);
+          console.warn("Immediate order confirmation job processing error:", procErr);
         }
         break;
       }
 
-      // 🚚 Fulfillment / Shipping Tracking Alert
+      // 🚚 Order Shipped / Fulfilled / Tracking Update
       case "ORDERS_FULFILLED":
       case "FULFILLMENTS_CREATE":
       case "FULFILLMENTS_UPDATE": {
-        if (!merchant.orderShippedEnabled) break;
+        const orderId = String(data.order_id || data.id);
+        const orderNumber = String(data.order_number || data.name || `#${orderId}`);
 
-        const fulfillment = data.fulfillment || data;
-        const rawFulfillmentPhone =
-          data.phone ||
+        const rawCustomerPhone =
           data.destination?.phone ||
+          data.phone ||
           data.customer?.phone ||
           data.shipping_address?.phone ||
           data.billing_address?.phone ||
-          fulfillment.destination?.phone ||
+          data.customer?.default_address?.phone ||
           (Array.isArray(data.customer?.addresses) ? data.customer.addresses.find((a: any) => a?.phone)?.phone : null);
 
-        const customerPhone = normalizePhoneNumber(rawFulfillmentPhone);
+        let customerPhone = normalizePhoneNumber(rawCustomerPhone);
+
+        // If phone is missing in fulfillment payload, look up in OrderConfirmation record
+        if (!customerPhone) {
+          const savedOrder = await db.orderConfirmation.findFirst({
+            where: { merchantId: merchant.id, orderId },
+          });
+          if (savedOrder) customerPhone = savedOrder.customerPhone;
+        }
 
         if (!customerPhone) break;
 
-        const customerName = data.customer?.first_name || data.destination?.first_name || "Customer";
-        const orderNumber = String(data.order_number || data.name || "Recent Order");
-        const trackingUrl = fulfillment.tracking_url || fulfillment.tracking_urls?.[0] || `https://${shop}/account/orders`;
-        const carrier = fulfillment.tracking_company || "Express Courier";
+        const customerName = data.destination?.first_name || data.customer?.first_name || data.shipping_address?.first_name || "Customer";
+        const trackingCompany = data.tracking_company || (data.tracking_numbers && data.tracking_numbers.length > 0 ? "Courier Partner" : "");
+        const trackingNumber = data.tracking_number || (data.tracking_numbers && data.tracking_numbers[0]) || "";
+        const trackingUrl = data.tracking_url || (data.tracking_urls && data.tracking_urls[0]) || `https://${shop}/account/orders`;
 
-        // If status is delivered
-        const isDelivered = fulfillment.shipment_status === "delivered" || data.shipment_status === "delivered";
-        const eventType = isDelivered ? "ORDER_DELIVERED" : "ORDER_SHIPPED";
+        const isDelivered = data.shipment_status === "delivered";
 
+        // Check which flow is triggered
         if (isDelivered && !merchant.orderDeliveredEnabled) break;
+        if (!isDelivered && !merchant.orderShippedEnabled) break;
+
+        const eventType = isDelivered ? "ORDER_DELIVERED" : "ORDER_SHIPPED";
 
         await enqueueJob(
           merchant.id,
           "SEND_WHATSAPP",
           {
+            eventType,
             recipientPhone: customerPhone,
             customerName,
-            eventType,
+            orderId,
+            orderNumber,
             templateVariables: {
               customer_name: customerName,
-              order_number: orderNumber,
+              order_number: orderNumber.replace(/^#/, ""),
+              order_name: orderNumber,
               tracking_url: trackingUrl,
-              carrier,
+              tracking_number: trackingNumber || "Live Tracking Available",
+              carrier: trackingCompany || "Courier",
               store_name: merchant.name || shop.replace(".myshopify.com", ""),
               discount_code: "VIP10",
             },
@@ -398,7 +423,40 @@ export const action = async (args: ActionFunctionArgs) => {
       default:
         break;
     }
+
+    const durationMs = Date.now() - startTime;
+    await logShopifyApiCall({
+      merchantId: merchant.id,
+      shop,
+      topic: normalizedTopic,
+      apiType: "WEBHOOK",
+      httpMethod: "POST",
+      statusCode: 200,
+      durationMs,
+      status: "SUCCESS",
+      webhookId,
+      apiVersion,
+      requestPayload: data,
+      responseBody: { success: true, topic: normalizedTopic },
+      initiatedBy: "SHOPIFY_WEBHOOK",
+    });
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    await logShopifyApiCall({
+      merchantId: merchant.id,
+      shop,
+      topic: normalizedTopic,
+      apiType: "WEBHOOK",
+      httpMethod: "POST",
+      statusCode: 500,
+      durationMs,
+      status: "FAILED",
+      webhookId,
+      apiVersion,
+      requestPayload: data,
+      errorMessage: err?.message || String(err),
+      initiatedBy: "SHOPIFY_WEBHOOK",
+    });
     await logWarn(`Webhook execution error for ${topic}: ${err.message}`, { shop, source: "webhook" });
   }
 

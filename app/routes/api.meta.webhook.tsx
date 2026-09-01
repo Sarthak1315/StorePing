@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import db from "../db.server";
 import { logInfo, logWarn } from "../utils/logger.server";
+import { logMetaApiCall } from "../utils/meta-audit.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 import { syncOrderUpdateToShopify } from "../utils/shopify-order.server";
 import { calculateMessageCost, checkAndTriggerSpendAlerts } from "../utils/meta-pricing.server";
@@ -32,8 +33,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
  * and interactive button replies (Order & Address Confirmation, Updates, Support).
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const webhookStartTime = Date.now();
+  let rawBody = "";
+  let lastMerchantId: string | null = null;
+
   try {
-    const rawBody = await request.text();
+    rawBody = await request.text();
     let body: any;
     try {
       body = JSON.parse(rawBody);
@@ -59,6 +64,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           merchant = await db.merchant.findFirst({
             where: { isWhatsAppConnected: true },
           });
+        }
+
+        if (merchant) {
+          lastMerchantId = merchant.id;
         }
 
         // 1. Message Status Updates (sent, delivered, read, failed) & Pricing Telemetry
@@ -468,10 +477,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
+    const durationMs = Date.now() - webhookStartTime;
+    await logMetaApiCall({
+      merchantId: lastMerchantId,
+      endpoint: "WEBHOOK: /api/meta/webhook",
+      httpMethod: "POST",
+      statusCode: 200,
+      durationMs,
+      status: "SUCCESS",
+      requestPayload: rawBody,
+      responseBody: { status: "EVENT_RECEIVED" },
+      initiatedBy: "META_WEBHOOK",
+    });
+
     return new Response("EVENT_RECEIVED", { status: 200 });
   } catch (err: any) {
+    const durationMs = Date.now() - webhookStartTime;
+    await logMetaApiCall({
+      merchantId: lastMerchantId,
+      endpoint: "WEBHOOK: /api/meta/webhook",
+      httpMethod: "POST",
+      statusCode: 500,
+      durationMs,
+      status: "FAILED",
+      requestPayload: rawBody,
+      errorMessage: err?.message || String(err),
+      initiatedBy: "META_WEBHOOK",
+    });
     await logWarn(`Meta Webhook processing error: ${err.message}`, { source: "meta-webhook" });
     return new Response("EVENT_RECEIVED", { status: 200 });
   }
 };
-

@@ -1,6 +1,7 @@
 import { unauthenticated } from "../shopify.server";
 import db from "../db.server";
 import { logInfo, logError, logWarn } from "./logger.server";
+import { logShopifyApiCall } from "./shopify-audit.server";
 
 export interface SyncOrderToShopifyOptions {
   shop: string;
@@ -16,6 +17,7 @@ export interface SyncOrderToShopifyOptions {
  */
 export async function syncOrderUpdateToShopify(options: SyncOrderToShopifyOptions) {
   const { shop, orderId, orderNumber, status, customerNotes } = options;
+  const startTime = Date.now();
 
   try {
     const { admin } = await unauthenticated.admin(shop);
@@ -158,15 +160,43 @@ export async function syncOrderUpdateToShopify(options: SyncOrderToShopifyOption
 
     const updateJson = await updateRes.json();
     const userErrors = updateJson.data?.orderUpdate?.userErrors || [];
+    const durationMs = Date.now() - startTime;
 
     if (userErrors.length > 0) {
       const errorMsg = userErrors.map((e: any) => e.message).join(", ");
+      await logShopifyApiCall({
+        shop,
+        topic: "admin/graphql:orderUpdate",
+        apiType: "GRAPHQL",
+        httpMethod: "GRAPHQL",
+        statusCode: 400,
+        durationMs,
+        status: "FAILED",
+        requestPayload: { targetGid, tags: newTags, note: updatedNote },
+        responseBody: updateJson,
+        errorMessage: errorMsg,
+        initiatedBy: "APP_ORDERS_SYNC",
+      });
+
       await logWarn(`Shopify orderUpdate userErrors for ${orderNumber}: ${errorMsg}`, {
         shop,
         source: "shopify-sync",
       });
       return { success: false, error: errorMsg };
     }
+
+    await logShopifyApiCall({
+      shop,
+      topic: "admin/graphql:orderUpdate",
+      apiType: "GRAPHQL",
+      httpMethod: "GRAPHQL",
+      statusCode: 200,
+      durationMs,
+      status: "SUCCESS",
+      requestPayload: { targetGid, tags: newTags, note: updatedNote },
+      responseBody: updateJson,
+      initiatedBy: "APP_ORDERS_SYNC",
+    });
 
     await logInfo(
       `Successfully synced order ${orderNumber} to Shopify Admin (Status: ${status}, Note updated, Tags: ${newTags.join(", ")})`,
@@ -178,6 +208,20 @@ export async function syncOrderUpdateToShopify(options: SyncOrderToShopifyOption
       updatedOrder: updateJson.data?.orderUpdate?.order,
     };
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    await logShopifyApiCall({
+      shop,
+      topic: "admin/graphql:orderUpdate",
+      apiType: "GRAPHQL",
+      httpMethod: "GRAPHQL",
+      statusCode: 500,
+      durationMs,
+      status: "FAILED",
+      requestPayload: { orderId, orderNumber, status, customerNotes },
+      errorMessage: err?.message || String(err),
+      initiatedBy: "APP_ORDERS_SYNC",
+    });
+
     await logError(`Failed to sync order update to Shopify: ${err.message}`, {
       shop,
       source: "shopify-sync",
