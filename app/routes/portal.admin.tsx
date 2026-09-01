@@ -92,7 +92,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       },
     }),
     db.metaApiLog.findMany({
-      take: 100,
+      take: 500,
       orderBy: { createdAt: "desc" },
       include: {
         merchant: {
@@ -125,7 +125,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     getPlatformSettings(),
     getGlobalPlatformBillingSummary(),
     db.shopifyApiLog.findMany({
-      take: 100,
+      take: 500,
       orderBy: { createdAt: "desc" },
       include: {
         merchant: {
@@ -404,7 +404,7 @@ export default function SuperAdminDashboard() {
 
   // Active Main Navigation Section
   const [activeSection, setActiveSection] = useState<
-    "OVERVIEW" | "BILLING" | "SETTINGS" | "API_LOGS" | "APPROVALS" | "STORES" | "USERS" | "JOBS"
+    "OVERVIEW" | "BILLING" | "SETTINGS" | "META_LOGS" | "SHOPIFY_LOGS" | "API_LOGS" | "APPROVALS" | "STORES" | "USERS" | "JOBS"
   >("OVERVIEW");
 
   // Filter & Search States
@@ -425,6 +425,16 @@ export default function SuperAdminDashboard() {
   const [shopifyApiTypeFilter, setShopifyApiTypeFilter] = useState("ALL");
   const [selectedApiLog, setSelectedApiLog] = useState<(typeof apiLogs)[number] | null>(null);
   const [selectedShopifyLog, setSelectedShopifyLog] = useState<(typeof shopifyLogs)[number] | null>(null);
+
+  // Group By & Pagination States for Meta
+  const [metaGroupBy, setMetaGroupBy] = useState<"NONE" | "STORE" | "WEBHOOK" | "ENDPOINT">("NONE");
+  const [metaPage, setMetaPage] = useState(1);
+  const [metaPageSize, setMetaPageSize] = useState(15);
+
+  // Group By & Pagination States for Shopify
+  const [shopifyGroupBy, setShopifyGroupBy] = useState<"NONE" | "STORE" | "WEBHOOK" | "API_TYPE">("NONE");
+  const [shopifyPage, setShopifyPage] = useState(1);
+  const [shopifyPageSize, setShopifyPageSize] = useState(15);
 
   // Export Modal State
   const [showExportModal, setShowExportModal] = useState(false);
@@ -479,6 +489,7 @@ export default function SuperAdminDashboard() {
       log.endpoint.toLowerCase().includes(query) ||
       (log.initiatedBy && log.initiatedBy.toLowerCase().includes(query)) ||
       (log.merchant?.shop && log.merchant.shop.toLowerCase().includes(query)) ||
+      (log.merchant?.name && log.merchant.name.toLowerCase().includes(query)) ||
       (log.metaMessageId && log.metaMessageId.toLowerCase().includes(query)) ||
       (log.errorMessage && log.errorMessage.toLowerCase().includes(query)) ||
       (log.statusCode && log.statusCode.toString().includes(query));
@@ -488,6 +499,170 @@ export default function SuperAdminDashboard() {
 
     return matchesSearch && matchesStatus && matchesMethod;
   });
+
+  // Meta Group By Aggregations
+  // 1. Group By Store
+  const metaStoreGroups = Object.values(
+    filteredApiLogs.reduce<
+      Record<
+        string,
+        {
+          store: string;
+          name: string;
+          totalCalls: number;
+          successCount: number;
+          rateLimitedCount: number;
+          failedCount: number;
+          totalDurationMs: number;
+          avgLatency: number;
+          lastActivity: Date;
+        }
+      >
+    >((acc, log) => {
+      const storeKey = log.merchant?.shop || "Global / System";
+      if (!acc[storeKey]) {
+        acc[storeKey] = {
+          store: storeKey,
+          name: log.merchant?.name || storeKey,
+          totalCalls: 0,
+          successCount: 0,
+          rateLimitedCount: 0,
+          failedCount: 0,
+          totalDurationMs: 0,
+          avgLatency: 0,
+          lastActivity: new Date(log.createdAt),
+        };
+      }
+      acc[storeKey].totalCalls++;
+      if (log.status === "SUCCESS") acc[storeKey].successCount++;
+      else if (log.status === "RATE_LIMITED") acc[storeKey].rateLimitedCount++;
+      else acc[storeKey].failedCount++;
+
+      if (log.durationMs) acc[storeKey].totalDurationMs += log.durationMs;
+      const logDate = new Date(log.createdAt);
+      if (logDate > acc[storeKey].lastActivity) acc[storeKey].lastActivity = logDate;
+      return acc;
+    }, {})
+  )
+    .map((g) => ({
+      ...g,
+      avgLatency: g.totalCalls > 0 ? Math.round(g.totalDurationMs / g.totalCalls) : 0,
+    }))
+    .sort((a, b) => b.totalCalls - a.totalCalls);
+
+  // 2. Group By Webhook
+  const metaWebhookGroups = Object.values(
+    filteredApiLogs
+      .filter((log) => {
+        const trigger = (log.initiatedBy || "").toLowerCase();
+        const ep = (log.endpoint || "").toLowerCase();
+        return (
+          trigger.includes("webhook") ||
+          ep.includes("webhook") ||
+          ep.includes("subscribed_apps") ||
+          trigger.includes("inbound") ||
+          trigger.includes("status") ||
+          trigger.includes("interactive")
+        );
+      })
+      .reduce<
+        Record<
+          string,
+          {
+            webhookType: string;
+            endpoint: string;
+            totalCount: number;
+            successCount: number;
+            failedCount: number;
+            rateLimitedCount: number;
+            totalDurationMs: number;
+            avgLatency: number;
+            lastReceived: Date;
+          }
+        >
+      >((acc, log) => {
+        const key = log.initiatedBy || log.endpoint || "Meta Inbound Webhook";
+        if (!acc[key]) {
+          acc[key] = {
+            webhookType: key,
+            endpoint: log.endpoint,
+            totalCount: 0,
+            successCount: 0,
+            failedCount: 0,
+            rateLimitedCount: 0,
+            totalDurationMs: 0,
+            avgLatency: 0,
+            lastReceived: new Date(log.createdAt),
+          };
+        }
+        acc[key].totalCount++;
+        if (log.status === "SUCCESS") acc[key].successCount++;
+        else if (log.status === "RATE_LIMITED") acc[key].rateLimitedCount++;
+        else acc[key].failedCount++;
+
+        if (log.durationMs) acc[key].totalDurationMs += log.durationMs;
+        const logDate = new Date(log.createdAt);
+        if (logDate > acc[key].lastReceived) acc[key].lastReceived = logDate;
+        return acc;
+      }, {})
+  )
+    .map((g) => ({
+      ...g,
+      avgLatency: g.totalCount > 0 ? Math.round(g.totalDurationMs / g.totalCount) : 0,
+    }))
+    .sort((a, b) => b.totalCount - a.totalCount);
+
+  // 3. Group By API Endpoint
+  const metaEndpointGroups = Object.values(
+    filteredApiLogs.reduce<
+      Record<
+        string,
+        {
+          endpointKey: string;
+          httpMethod: string;
+          endpoint: string;
+          totalCalls: number;
+          successCount: number;
+          rateLimitedCount: number;
+          failedCount: number;
+          totalDurationMs: number;
+          avgLatency: number;
+          lastCall: Date;
+        }
+      >
+    >((acc, log) => {
+      const cleanEndpoint = log.endpoint.replace(/\/v\d+\.\d+\/\d+/, "").replace(/\?.*/, "") || log.endpoint;
+      const key = `${log.httpMethod} ${cleanEndpoint}`;
+      if (!acc[key]) {
+        acc[key] = {
+          endpointKey: key,
+          httpMethod: log.httpMethod,
+          endpoint: log.endpoint,
+          totalCalls: 0,
+          successCount: 0,
+          rateLimitedCount: 0,
+          failedCount: 0,
+          totalDurationMs: 0,
+          avgLatency: 0,
+          lastCall: new Date(log.createdAt),
+        };
+      }
+      acc[key].totalCalls++;
+      if (log.status === "SUCCESS") acc[key].successCount++;
+      else if (log.status === "RATE_LIMITED") acc[key].rateLimitedCount++;
+      else acc[key].failedCount++;
+
+      if (log.durationMs) acc[key].totalDurationMs += log.durationMs;
+      const logDate = new Date(log.createdAt);
+      if (logDate > acc[key].lastCall) acc[key].lastCall = logDate;
+      return acc;
+    }, {})
+  )
+    .map((g) => ({
+      ...g,
+      avgLatency: g.totalCalls > 0 ? Math.round(g.totalDurationMs / g.totalCalls) : 0,
+    }))
+    .sort((a, b) => b.totalCalls - a.totalCalls);
 
   // Filtered Shopify API & Webhook Logs
   const filteredShopifyLogs = shopifyLogs.filter((log) => {
@@ -508,11 +683,176 @@ export default function SuperAdminDashboard() {
     return matchesSearch && matchesStatus && matchesMethod && matchesApiType;
   });
 
+  // Shopify Group By Aggregations
+  // 1. Group By Store
+  const shopifyStoreGroups = Object.values(
+    filteredShopifyLogs.reduce<
+      Record<
+        string,
+        {
+          store: string;
+          name: string;
+          totalOps: number;
+          webhookCount: number;
+          graphqlCount: number;
+          restCount: number;
+          successCount: number;
+          rateLimitedCount: number;
+          failedCount: number;
+          totalDurationMs: number;
+          avgLatency: number;
+          lastActivity: Date;
+        }
+      >
+    >((acc, log) => {
+      const storeKey = log.shop || log.merchant?.shop || "Global / App";
+      if (!acc[storeKey]) {
+        acc[storeKey] = {
+          store: storeKey,
+          name: log.merchant?.name || storeKey,
+          totalOps: 0,
+          webhookCount: 0,
+          graphqlCount: 0,
+          restCount: 0,
+          successCount: 0,
+          rateLimitedCount: 0,
+          failedCount: 0,
+          totalDurationMs: 0,
+          avgLatency: 0,
+          lastActivity: new Date(log.createdAt),
+        };
+      }
+      acc[storeKey].totalOps++;
+      if (log.apiType === "WEBHOOK") acc[storeKey].webhookCount++;
+      else if (log.apiType === "GRAPHQL") acc[storeKey].graphqlCount++;
+      else if (log.apiType === "REST") acc[storeKey].restCount++;
+
+      if (log.status === "SUCCESS") acc[storeKey].successCount++;
+      else if (log.status === "RATE_LIMITED") acc[storeKey].rateLimitedCount++;
+      else acc[storeKey].failedCount++;
+
+      if (log.durationMs) acc[storeKey].totalDurationMs += log.durationMs;
+      const logDate = new Date(log.createdAt);
+      if (logDate > acc[storeKey].lastActivity) acc[storeKey].lastActivity = logDate;
+      return acc;
+    }, {})
+  )
+    .map((g) => ({
+      ...g,
+      avgLatency: g.totalOps > 0 ? Math.round(g.totalDurationMs / g.totalOps) : 0,
+    }))
+    .sort((a, b) => b.totalOps - a.totalOps);
+
+  // 2. Group By Webhook Topic
+  const shopifyWebhookGroups = Object.values(
+    filteredShopifyLogs
+      .filter((log) => log.apiType === "WEBHOOK" || log.topic.includes("ORDERS") || log.topic.includes("CHECKOUTS") || log.topic.includes("APP_") || log.topic.includes("FULFILLMENTS"))
+      .reduce<
+        Record<
+          string,
+          {
+            topic: string;
+            totalCount: number;
+            successCount: number;
+            failedCount: number;
+            ignoredCount: number;
+            rateLimitedCount: number;
+            totalDurationMs: number;
+            avgLatency: number;
+            lastReceived: Date;
+          }
+        >
+      >((acc, log) => {
+        const key = log.topic || "UNKNOWN_WEBHOOK";
+        if (!acc[key]) {
+          acc[key] = {
+            topic: key,
+            totalCount: 0,
+            successCount: 0,
+            failedCount: 0,
+            ignoredCount: 0,
+            rateLimitedCount: 0,
+            totalDurationMs: 0,
+            avgLatency: 0,
+            lastReceived: new Date(log.createdAt),
+          };
+        }
+        acc[key].totalCount++;
+        if (log.status === "SUCCESS") acc[key].successCount++;
+        else if (log.status === "IGNORED") acc[key].ignoredCount++;
+        else if (log.status === "RATE_LIMITED") acc[key].rateLimitedCount++;
+        else acc[key].failedCount++;
+
+        if (log.durationMs) acc[key].totalDurationMs += log.durationMs;
+        const logDate = new Date(log.createdAt);
+        if (logDate > acc[key].lastReceived) acc[key].lastReceived = logDate;
+        return acc;
+      }, {})
+  )
+    .map((g) => ({
+      ...g,
+      avgLatency: g.totalCount > 0 ? Math.round(g.totalDurationMs / g.totalCount) : 0,
+    }))
+    .sort((a, b) => b.totalCount - a.totalCount);
+
+  // 3. Group By API Operation
+  const shopifyApiGroups = Object.values(
+    filteredShopifyLogs.reduce<
+      Record<
+        string,
+        {
+          operationKey: string;
+          apiType: string;
+          topic: string;
+          httpMethod: string;
+          totalCalls: number;
+          successCount: number;
+          failedCount: number;
+          rateLimitedCount: number;
+          totalDurationMs: number;
+          avgLatency: number;
+          lastCall: Date;
+        }
+      >
+    >((acc, log) => {
+      const key = `${log.apiType} : ${log.topic || log.httpMethod}`;
+      if (!acc[key]) {
+        acc[key] = {
+          operationKey: key,
+          apiType: log.apiType,
+          topic: log.topic,
+          httpMethod: log.httpMethod,
+          totalCalls: 0,
+          successCount: 0,
+          failedCount: 0,
+          rateLimitedCount: 0,
+          totalDurationMs: 0,
+          avgLatency: 0,
+          lastCall: new Date(log.createdAt),
+        };
+      }
+      acc[key].totalCalls++;
+      if (log.status === "SUCCESS") acc[key].successCount++;
+      else if (log.status === "RATE_LIMITED") acc[key].rateLimitedCount++;
+      else acc[key].failedCount++;
+
+      if (log.durationMs) acc[key].totalDurationMs += log.durationMs;
+      const logDate = new Date(log.createdAt);
+      if (logDate > acc[key].lastCall) acc[key].lastCall = logDate;
+      return acc;
+    }, {})
+  )
+    .map((g) => ({
+      ...g,
+      avgLatency: g.totalCalls > 0 ? Math.round(g.totalDurationMs / g.totalCalls) : 0,
+    }))
+    .sort((a, b) => b.totalCalls - a.totalCalls);
+
   const exportDownloadUrl = `/api/admin/export-logs?type=${exportLogType}&range=${exportRangePreset}${
     exportRangePreset === "custom" && exportStartDate ? `&startDate=${exportStartDate}` : ""
   }${exportRangePreset === "custom" && exportEndDate ? `&endDate=${exportEndDate}` : ""}&status=${exportStatus}`;
 
-  // Menu items list
+  // Menu items list with distinct Meta and Shopify telemetry sections
   const menuItems = [
     {
       id: "OVERVIEW" as const,
@@ -535,11 +875,18 @@ export default function SuperAdminDashboard() {
       badgeColor: "bg-slate-800 text-slate-400",
     },
     {
-      id: "API_LOGS" as const,
-      label: "Meta API Logs & Telemetry",
-      icon: "📡",
+      id: "META_LOGS" as const,
+      label: "Meta Logs & Webhooks",
+      icon: "🟢",
       badge: `${apiStats.totalApiCalls}`,
-      badgeColor: "bg-slate-800 text-slate-300",
+      badgeColor: "bg-slate-800 text-emerald-400",
+    },
+    {
+      id: "SHOPIFY_LOGS" as const,
+      label: "Shopify Logs & Webhooks",
+      icon: "🛍️",
+      badge: `${shopifyStats.totalShopifyLogs}`,
+      badgeColor: "bg-slate-800 text-purple-400",
     },
     {
       id: "APPROVALS" as const,
@@ -627,12 +974,24 @@ export default function SuperAdminDashboard() {
             )}
 
             {menuItems.map((item) => {
-              const isActive = activeSection === item.id;
+              const isActive =
+                activeSection === item.id ||
+                (item.id === "META_LOGS" && activeSection === "API_LOGS" && logPlatform === "META") ||
+                (item.id === "SHOPIFY_LOGS" && activeSection === "API_LOGS" && logPlatform === "SHOPIFY");
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveSection(item.id)}
+                  onClick={() => {
+                    setActiveSection(item.id);
+                    if (item.id === "META_LOGS") {
+                      setLogPlatform("META");
+                      setMetaPage(1);
+                    } else if (item.id === "SHOPIFY_LOGS") {
+                      setLogPlatform("SHOPIFY");
+                      setShopifyPage(1);
+                    }
+                  }}
                   title={!isSidebarOpen ? item.label : undefined}
                   className={`w-full flex items-center ${
                     isSidebarOpen ? "justify-between px-3" : "justify-center px-2"
@@ -745,19 +1104,30 @@ export default function SuperAdminDashboard() {
             </button>
             <div>
               <h1 className="text-base font-bold text-white tracking-tight">
-                {menuItems.find((m) => m.id === activeSection)?.label || "Super Admin"}
+                {activeSection === "META_LOGS" || (activeSection === "API_LOGS" && logPlatform === "META")
+                  ? "Meta API Logs & Telemetry"
+                  : activeSection === "SHOPIFY_LOGS" || (activeSection === "API_LOGS" && logPlatform === "SHOPIFY")
+                  ? "Shopify API & Webhook Logs"
+                  : menuItems.find((m) => m.id === activeSection)?.label || "Super Admin"}
               </h1>
               <p className="text-[11px] text-slate-400 hidden sm:block">
-                StorePing multi-tenant platform telemetry, WhatsApp Cloud API billing, and merchant governance.
+                {activeSection === "META_LOGS" || (activeSection === "API_LOGS" && logPlatform === "META")
+                  ? "Meta WhatsApp Cloud API requests, inbound webhooks, and live pricing & token usage telemetry."
+                  : activeSection === "SHOPIFY_LOGS" || (activeSection === "API_LOGS" && logPlatform === "SHOPIFY")
+                  ? "Shopify Webhooks ingestion, GraphQL Admin queries/mutations, and store integration audit trail."
+                  : "StorePing multi-tenant platform telemetry, WhatsApp Cloud API billing, and merchant governance."}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
-            {activeSection === "API_LOGS" && (
+            {(activeSection === "API_LOGS" || activeSection === "META_LOGS" || activeSection === "SHOPIFY_LOGS") && (
               <button
                 type="button"
-                onClick={() => setShowExportModal(true)}
+                onClick={() => {
+                  setExportLogType(activeSection === "SHOPIFY_LOGS" || logPlatform === "SHOPIFY" ? "shopify" : "meta");
+                  setShowExportModal(true);
+                }}
                 className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition flex items-center gap-1.5"
               >
                 <span>📊</span>
@@ -1205,8 +1575,8 @@ export default function SuperAdminDashboard() {
             </div>
           )}
 
-          {/* SECTION 4: API LOGS & WEBHOOK TELEMETRY (META & SHOPIFY) */}
-          {activeSection === "API_LOGS" && (
+          {/* SECTION 4: API LOGS & WEBHOOK TELEMETRY (META & SHOPIFY WITH GROUPBY & PAGING) */}
+          {(activeSection === "API_LOGS" || activeSection === "META_LOGS" || activeSection === "SHOPIFY_LOGS") && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
               {/* Platform Switcher Tabs & Export Button */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
@@ -1215,6 +1585,7 @@ export default function SuperAdminDashboard() {
                     type="button"
                     onClick={() => {
                       setLogPlatform("META");
+                      setMetaPage(1);
                       setSelectedApiLog(null);
                       setSelectedShopifyLog(null);
                     }}
@@ -1232,12 +1603,13 @@ export default function SuperAdminDashboard() {
                     type="button"
                     onClick={() => {
                       setLogPlatform("SHOPIFY");
+                      setShopifyPage(1);
                       setSelectedApiLog(null);
                       setSelectedShopifyLog(null);
                     }}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
                       logPlatform === "SHOPIFY"
-                        ? "bg-emerald-500 text-slate-950 shadow-sm"
+                        ? "bg-purple-500 text-white shadow-sm"
                         : "bg-slate-950 text-slate-400 border border-slate-800 hover:text-white hover:bg-slate-800/60"
                     }`}
                   >
@@ -1252,7 +1624,7 @@ export default function SuperAdminDashboard() {
                     setExportLogType(logPlatform === "META" ? "meta" : "shopify");
                     setShowExportModal(true);
                   }}
-                  className="px-3.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 shadow-sm"
                 >
                   <span>📊</span>
                   <span>Export CSV Logs</span>
@@ -1300,11 +1672,172 @@ export default function SuperAdminDashboard() {
                 </div>
               )}
 
+              {/* Group By Selector Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-xl bg-slate-950/80 border border-slate-800">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-slate-400 font-medium px-1 text-[11px]">Group By:</span>
+                  {logPlatform === "META" ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMetaGroupBy("NONE");
+                          setMetaPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          metaGroupBy === "NONE"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        📋 All Logs ({filteredApiLogs.length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMetaGroupBy("STORE");
+                          setMetaPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          metaGroupBy === "STORE"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        🏬 Group by Store ({metaStoreGroups.length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMetaGroupBy("WEBHOOK");
+                          setMetaPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          metaGroupBy === "WEBHOOK"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        🪝 Group by Webhook ({metaWebhookGroups.length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMetaGroupBy("ENDPOINT");
+                          setMetaPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          metaGroupBy === "ENDPOINT"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ Group by API Call ({metaEndpointGroups.length})
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShopifyGroupBy("NONE");
+                          setShopifyPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          shopifyGroupBy === "NONE"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        📋 All Logs ({filteredShopifyLogs.length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShopifyGroupBy("STORE");
+                          setShopifyPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          shopifyGroupBy === "STORE"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        🏬 Group by Store ({shopifyStoreGroups.length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShopifyGroupBy("WEBHOOK");
+                          setShopifyPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          shopifyGroupBy === "WEBHOOK"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        🪝 Group by Webhook ({shopifyWebhookGroups.length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShopifyGroupBy("API_TYPE");
+                          setShopifyPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition text-xs ${
+                          shopifyGroupBy === "API_TYPE"
+                            ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        ⚡ Group by API Call ({shopifyApiGroups.length})
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {/* Per Page Selector */}
+                <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                  <span className="text-[10px]">Show:</span>
+                  <select
+                    value={logPlatform === "META" ? metaPageSize : shopifyPageSize}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (logPlatform === "META") {
+                        setMetaPageSize(val);
+                        setMetaPage(1);
+                      } else {
+                        setShopifyPageSize(val);
+                        setShopifyPage(1);
+                      }
+                    }}
+                    className="px-2 py-0.5 bg-slate-900 border border-slate-700 rounded text-xs text-slate-200 focus:outline-none focus:border-slate-500"
+                  >
+                    <option value={10}>10 / page</option>
+                    <option value={15}>15 / page</option>
+                    <option value={25}>25 / page</option>
+                    <option value={50}>50 / page</option>
+                    <option value={100}>100 / page</option>
+                  </select>
+                </div>
+              </div>
+
               {/* Search & Filter Bar */}
               <div className="flex flex-wrap items-center gap-2.5 pt-1">
                 <select
                   value={apiStatusFilter}
-                  onChange={(e) => setApiStatusFilter(e.target.value)}
+                  onChange={(e) => {
+                    setApiStatusFilter(e.target.value);
+                    setMetaPage(1);
+                    setShopifyPage(1);
+                  }}
                   className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-slate-600"
                 >
                   <option value="ALL">All Statuses</option>
@@ -1317,7 +1850,10 @@ export default function SuperAdminDashboard() {
                 {logPlatform === "SHOPIFY" && (
                   <select
                     value={shopifyApiTypeFilter}
-                    onChange={(e) => setShopifyApiTypeFilter(e.target.value)}
+                    onChange={(e) => {
+                      setShopifyApiTypeFilter(e.target.value);
+                      setShopifyPage(1);
+                    }}
                     className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-slate-600"
                   >
                     <option value="ALL">All API Types</option>
@@ -1330,7 +1866,11 @@ export default function SuperAdminDashboard() {
 
                 <select
                   value={apiMethodFilter}
-                  onChange={(e) => setApiMethodFilter(e.target.value)}
+                  onChange={(e) => {
+                    setApiMethodFilter(e.target.value);
+                    setMetaPage(1);
+                    setShopifyPage(1);
+                  }}
                   className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-slate-600"
                 >
                   <option value="ALL">All HTTP Methods</option>
@@ -1344,178 +1884,952 @@ export default function SuperAdminDashboard() {
                   <input
                     type="text"
                     value={apiSearch}
-                    onChange={(e) => setApiSearch(e.target.value)}
+                    onChange={(e) => {
+                      setApiSearch(e.target.value);
+                      setMetaPage(1);
+                      setShopifyPage(1);
+                    }}
                     placeholder={
                       logPlatform === "META"
-                        ? "Search endpoint, user, message ID, status code..."
-                        : "Search topic, store, webhook ID, error, status code..."
+                        ? "Search endpoint, store name/shop, trigger, message ID, status code..."
+                        : "Search topic, store domain, webhook ID, error, status code..."
                     }
                     className="w-full pl-7 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-slate-600"
                   />
                   <span className="absolute left-2.5 top-2 text-[10px] text-slate-500">🔍</span>
                 </div>
+
+                {apiSearch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setApiSearch("");
+                      setMetaPage(1);
+                      setShopifyPage(1);
+                    }}
+                    className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded text-xs"
+                  >
+                    Clear ✕
+                  </button>
+                )}
               </div>
 
-              {/* Logs Table: META */}
+              {/* ========================================================================= */}
+              {/* PLATFORM 1: META WHATSAPP VIEWS (ALL LOGS & GROUPED VIEWS) */}
+              {/* ========================================================================= */}
               {logPlatform === "META" && (
-                filteredApiLogs.length === 0 ? (
-                  <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
-                    No Meta API audit records matching filter criteria.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-slate-400 font-medium">
-                          <th className="pb-2.5">Timestamp</th>
-                          <th className="pb-2.5">Initiated By / Trigger</th>
-                          <th className="pb-2.5">Store</th>
-                          <th className="pb-2.5">Method & Endpoint</th>
-                          <th className="pb-2.5">Status</th>
-                          <th className="pb-2.5">Latency</th>
-                          <th className="pb-2.5 text-right">Details</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                        {filteredApiLogs.map((log) => (
-                          <tr key={log.id} className="hover:bg-slate-800/30 transition">
-                            <td className="py-3 text-slate-400 whitespace-nowrap">
-                              <div>{new Date(log.createdAt).toLocaleDateString()}</div>
-                              <div className="text-[10px] text-slate-500">
-                                {new Date(log.createdAt).toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                  second: "2-digit",
+                <>
+                  {/* VIEW 1: ALL META LOGS */}
+                  {metaGroupBy === "NONE" && (
+                    filteredApiLogs.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No Meta API audit records matching filter criteria.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">Timestamp</th>
+                                <th className="pb-2.5">Initiated By / Trigger</th>
+                                <th className="pb-2.5">Store</th>
+                                <th className="pb-2.5">Method & Endpoint</th>
+                                <th className="pb-2.5">Status</th>
+                                <th className="pb-2.5">Latency</th>
+                                <th className="pb-2.5 text-right">Details</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {filteredApiLogs
+                                .slice((metaPage - 1) * metaPageSize, metaPage * metaPageSize)
+                                .map((log) => (
+                                  <tr key={log.id} className="hover:bg-slate-800/30 transition">
+                                    <td className="py-3 text-slate-400 whitespace-nowrap">
+                                      <div>{new Date(log.createdAt).toLocaleDateString()}</div>
+                                      <div className="text-[10px] text-slate-500">
+                                        {new Date(log.createdAt).toLocaleTimeString([], {
+                                          hour: "2-digit",
+                                          minute: "2-digit",
+                                          second: "2-digit",
+                                        })}
+                                      </div>
+                                    </td>
+                                    <td className="py-3 text-white font-sans font-medium">
+                                      {log.initiatedBy || "System"}
+                                    </td>
+                                    <td className="py-3 text-slate-300 font-sans">
+                                      <div>{log.merchant?.name || log.merchant?.shop || "Global"}</div>
+                                      {log.merchant?.shop && log.merchant.name && (
+                                        <div className="text-[10px] text-slate-500 font-mono">{log.merchant.shop}</div>
+                                      )}
+                                    </td>
+                                    <td className="py-3">
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 bg-slate-800 text-slate-300 border border-slate-700">
+                                        {log.httpMethod}
+                                      </span>
+                                      <span className="text-slate-300 font-mono">{log.endpoint}</span>
+                                    </td>
+                                    <td className="py-3">
+                                      <span
+                                        className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                          log.status === "SUCCESS"
+                                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                            : log.status === "RATE_LIMITED"
+                                            ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                                            : "bg-red-500/10 text-red-400 border border-red-500/20"
+                                        }`}
+                                      >
+                                        {log.statusCode || (log.status === "SUCCESS" ? 200 : 500)} {log.status}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 text-slate-400">
+                                      {log.durationMs ? `${log.durationMs}ms` : "—"}
+                                    </td>
+                                    <td className="py-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedApiLog(log)}
+                                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-sans font-medium transition"
+                                      >
+                                        Inspect 🔍
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(metaPage - 1) * metaPageSize + 1} to{" "}
+                            {Math.min(metaPage * metaPageSize, filteredApiLogs.length)} of {filteredApiLogs.length} Meta logs
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={metaPage <= 1}
+                              onClick={() => setMetaPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {metaPage} of {Math.ceil(filteredApiLogs.length / metaPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={metaPage >= Math.ceil(filteredApiLogs.length / metaPageSize)}
+                              onClick={() => setMetaPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {/* VIEW 2: META GROUP BY STORE */}
+                  {metaGroupBy === "STORE" && (
+                    metaStoreGroups.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No stores found matching current filters.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">Store / Merchant</th>
+                                <th className="pb-2.5">Total Meta Calls</th>
+                                <th className="pb-2.5">Success Rate</th>
+                                <th className="pb-2.5">Rate Limited (429)</th>
+                                <th className="pb-2.5">Failed Calls</th>
+                                <th className="pb-2.5">Avg Latency</th>
+                                <th className="pb-2.5">Last Activity</th>
+                                <th className="pb-2.5 text-right">Drilldown</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {metaStoreGroups
+                                .slice((metaPage - 1) * metaPageSize, metaPage * metaPageSize)
+                                .map((group) => {
+                                  const successRate = group.totalCalls > 0 ? Math.round((group.successCount / group.totalCalls) * 100) : 100;
+                                  return (
+                                    <tr key={group.store} className="hover:bg-slate-800/30 transition">
+                                      <td className="py-3 font-sans">
+                                        <div className="font-semibold text-white">{group.name}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono">{group.store}</div>
+                                      </td>
+                                      <td className="py-3 text-white font-bold">{group.totalCalls}</td>
+                                      <td className="py-3">
+                                        <span className="text-emerald-400 font-semibold">{successRate}%</span>
+                                        <span className="text-slate-500 text-[10px] ml-1">({group.successCount})</span>
+                                      </td>
+                                      <td className="py-3">
+                                        {group.rateLimitedCount > 0 ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                                            {group.rateLimitedCount}
+                                          </span>
+                                        ) : (
+                                          <span className="text-slate-500">0</span>
+                                        )}
+                                      </td>
+                                      <td className="py-3">
+                                        {group.failedCount > 0 ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-bold border border-red-500/30">
+                                            {group.failedCount}
+                                          </span>
+                                        ) : (
+                                          <span className="text-slate-500">0</span>
+                                        )}
+                                      </td>
+                                      <td className="py-3 text-slate-300">{group.avgLatency}ms</td>
+                                      <td className="py-3 text-slate-400 text-[10px] whitespace-nowrap">
+                                        {group.lastActivity.toLocaleString()}
+                                      </td>
+                                      <td className="py-3 text-right font-sans">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setApiSearch(group.store);
+                                            setMetaGroupBy("NONE");
+                                            setMetaPage(1);
+                                          }}
+                                          className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded text-[10px] font-semibold transition"
+                                        >
+                                          View Store Logs 🔍
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
                                 })}
-                              </div>
-                            </td>
-                            <td className="py-3 text-white font-sans font-medium">
-                              {log.initiatedBy || "System"}
-                            </td>
-                            <td className="py-3 text-slate-300 font-sans">
-                              {log.merchant?.shop || "Global"}
-                            </td>
-                            <td className="py-3">
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 bg-slate-800 text-slate-300 border border-slate-700">
-                                {log.httpMethod}
-                              </span>
-                              <span className="text-slate-300 font-mono">{log.endpoint}</span>
-                            </td>
-                            <td className="py-3">
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                  log.status === "SUCCESS"
-                                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                                    : log.status === "RATE_LIMITED"
-                                    ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
-                                    : "bg-red-500/10 text-red-400 border border-red-500/20"
-                                }`}
-                              >
-                                {log.statusCode || (log.status === "SUCCESS" ? 200 : 500)} {log.status}
-                              </span>
-                            </td>
-                            <td className="py-3 text-slate-400">
-                              {log.durationMs ? `${log.durationMs}ms` : "—"}
-                            </td>
-                            <td className="py-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedApiLog(log)}
-                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-sans font-medium transition"
-                              >
-                                Inspect 🔍
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(metaPage - 1) * metaPageSize + 1} to{" "}
+                            {Math.min(metaPage * metaPageSize, metaStoreGroups.length)} of {metaStoreGroups.length} Stores
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={metaPage <= 1}
+                              onClick={() => setMetaPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {metaPage} of {Math.ceil(metaStoreGroups.length / metaPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={metaPage >= Math.ceil(metaStoreGroups.length / metaPageSize)}
+                              onClick={() => setMetaPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {/* VIEW 3: META GROUP BY WEBHOOK */}
+                  {metaGroupBy === "WEBHOOK" && (
+                    metaWebhookGroups.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No webhook transactions found matching current filters.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">Webhook Trigger / Event</th>
+                                <th className="pb-2.5">Total Invocations</th>
+                                <th className="pb-2.5">Success (200 OK)</th>
+                                <th className="pb-2.5">Failures</th>
+                                <th className="pb-2.5">Rate Limited</th>
+                                <th className="pb-2.5">Avg Latency</th>
+                                <th className="pb-2.5">Last Received</th>
+                                <th className="pb-2.5 text-right">Drilldown</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {metaWebhookGroups
+                                .slice((metaPage - 1) * metaPageSize, metaPage * metaPageSize)
+                                .map((group) => {
+                                  return (
+                                    <tr key={group.webhookType} className="hover:bg-slate-800/30 transition">
+                                      <td className="py-3 font-sans font-semibold text-white">
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 mr-2 font-mono">
+                                          WEBHOOK
+                                        </span>
+                                        {group.webhookType}
+                                      </td>
+                                      <td className="py-3 text-white font-bold">{group.totalCount}</td>
+                                      <td className="py-3 text-emerald-400 font-semibold">{group.successCount}</td>
+                                      <td className="py-3">
+                                        {group.failedCount > 0 ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-bold">
+                                            {group.failedCount}
+                                          </span>
+                                        ) : (
+                                          <span className="text-slate-500">0</span>
+                                        )}
+                                      </td>
+                                      <td className="py-3 text-amber-300">{group.rateLimitedCount}</td>
+                                      <td className="py-3 text-slate-300">{group.avgLatency}ms</td>
+                                      <td className="py-3 text-slate-400 text-[10px] whitespace-nowrap">
+                                        {group.lastReceived.toLocaleString()}
+                                      </td>
+                                      <td className="py-3 text-right font-sans">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setApiSearch(group.webhookType);
+                                            setMetaGroupBy("NONE");
+                                            setMetaPage(1);
+                                          }}
+                                          className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded text-[10px] font-semibold transition"
+                                        >
+                                          Inspect Webhooks 🔍
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(metaPage - 1) * metaPageSize + 1} to{" "}
+                            {Math.min(metaPage * metaPageSize, metaWebhookGroups.length)} of {metaWebhookGroups.length} Webhook groups
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={metaPage <= 1}
+                              onClick={() => setMetaPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {metaPage} of {Math.ceil(metaWebhookGroups.length / metaPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={metaPage >= Math.ceil(metaWebhookGroups.length / metaPageSize)}
+                              onClick={() => setMetaPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {/* VIEW 4: META GROUP BY ENDPOINT / API CALL */}
+                  {metaGroupBy === "ENDPOINT" && (
+                    metaEndpointGroups.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No API calls found matching current filters.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">HTTP Method & Endpoint</th>
+                                <th className="pb-2.5">Total Calls</th>
+                                <th className="pb-2.5">Success Rate</th>
+                                <th className="pb-2.5">Rate Limited</th>
+                                <th className="pb-2.5">Errors</th>
+                                <th className="pb-2.5">Avg Latency</th>
+                                <th className="pb-2.5">Last Invocation</th>
+                                <th className="pb-2.5 text-right">Drilldown</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {metaEndpointGroups
+                                .slice((metaPage - 1) * metaPageSize, metaPage * metaPageSize)
+                                .map((group) => {
+                                  const successRate = group.totalCalls > 0 ? Math.round((group.successCount / group.totalCalls) * 100) : 100;
+                                  return (
+                                    <tr key={group.endpointKey} className="hover:bg-slate-800/30 transition">
+                                      <td className="py-3">
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold mr-2 bg-slate-800 text-slate-300 border border-slate-700">
+                                          {group.httpMethod}
+                                        </span>
+                                        <span className="text-white font-mono">{group.endpointKey.replace(group.httpMethod + " ", "")}</span>
+                                      </td>
+                                      <td className="py-3 text-white font-bold">{group.totalCalls}</td>
+                                      <td className="py-3">
+                                        <span className="text-emerald-400 font-semibold">{successRate}%</span>
+                                        <span className="text-slate-500 text-[10px] ml-1">({group.successCount})</span>
+                                      </td>
+                                      <td className="py-3 text-amber-300">{group.rateLimitedCount}</td>
+                                      <td className="py-3">
+                                        {group.failedCount > 0 ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-bold">
+                                            {group.failedCount}
+                                          </span>
+                                        ) : (
+                                          <span className="text-slate-500">0</span>
+                                        )}
+                                      </td>
+                                      <td className="py-3 text-slate-300">{group.avgLatency}ms</td>
+                                      <td className="py-3 text-slate-400 text-[10px] whitespace-nowrap">
+                                        {group.lastCall.toLocaleString()}
+                                      </td>
+                                      <td className="py-3 text-right font-sans">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setApiSearch(group.endpointKey.replace(group.httpMethod + " ", ""));
+                                            setMetaGroupBy("NONE");
+                                            setMetaPage(1);
+                                          }}
+                                          className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded text-[10px] font-semibold transition"
+                                        >
+                                          Filter Endpoint 🔍
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(metaPage - 1) * metaPageSize + 1} to{" "}
+                            {Math.min(metaPage * metaPageSize, metaEndpointGroups.length)} of {metaEndpointGroups.length} Endpoints
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={metaPage <= 1}
+                              onClick={() => setMetaPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {metaPage} of {Math.ceil(metaEndpointGroups.length / metaPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={metaPage >= Math.ceil(metaEndpointGroups.length / metaPageSize)}
+                              onClick={() => setMetaPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+                </>
               )}
 
-              {/* Logs Table: SHOPIFY */}
+              {/* ========================================================================= */}
+              {/* PLATFORM 2: SHOPIFY WEBHOOKS & GRAPHQL VIEWS (ALL LOGS & GROUPED VIEWS) */}
+              {/* ========================================================================= */}
               {logPlatform === "SHOPIFY" && (
-                filteredShopifyLogs.length === 0 ? (
-                  <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
-                    No Shopify API / Webhook audit records matching filter criteria.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-slate-400 font-medium">
-                          <th className="pb-2.5">Timestamp</th>
-                          <th className="pb-2.5">Initiated By / Trigger</th>
-                          <th className="pb-2.5">Store Domain</th>
-                          <th className="pb-2.5">Type & Topic / Query</th>
-                          <th className="pb-2.5">Status</th>
-                          <th className="pb-2.5">Latency</th>
-                          <th className="pb-2.5 text-right">Details</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                        {filteredShopifyLogs.map((log) => (
-                          <tr key={log.id} className="hover:bg-slate-800/30 transition">
-                            <td className="py-3 text-slate-400 whitespace-nowrap">
-                              <div>{new Date(log.createdAt).toLocaleDateString()}</div>
-                              <div className="text-[10px] text-slate-500">
-                                {new Date(log.createdAt).toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                  second: "2-digit",
+                <>
+                  {/* VIEW 1: ALL SHOPIFY LOGS */}
+                  {shopifyGroupBy === "NONE" && (
+                    filteredShopifyLogs.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No Shopify API / Webhook audit records matching filter criteria.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">Timestamp</th>
+                                <th className="pb-2.5">Initiated By / Trigger</th>
+                                <th className="pb-2.5">Store Domain</th>
+                                <th className="pb-2.5">Type & Topic / Query</th>
+                                <th className="pb-2.5">Status</th>
+                                <th className="pb-2.5">Latency</th>
+                                <th className="pb-2.5 text-right">Details</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {filteredShopifyLogs
+                                .slice((shopifyPage - 1) * shopifyPageSize, shopifyPage * shopifyPageSize)
+                                .map((log) => (
+                                  <tr key={log.id} className="hover:bg-slate-800/30 transition">
+                                    <td className="py-3 text-slate-400 whitespace-nowrap">
+                                      <div>{new Date(log.createdAt).toLocaleDateString()}</div>
+                                      <div className="text-[10px] text-slate-500">
+                                        {new Date(log.createdAt).toLocaleTimeString([], {
+                                          hour: "2-digit",
+                                          minute: "2-digit",
+                                          second: "2-digit",
+                                        })}
+                                      </div>
+                                    </td>
+                                    <td className="py-3 text-white font-sans font-medium">
+                                      {log.initiatedBy || "SHOPIFY_WEBHOOK"}
+                                    </td>
+                                    <td className="py-3 text-slate-300 font-sans">
+                                      <div>{log.merchant?.name || log.shop || log.merchant?.shop || "Global"}</div>
+                                      {(log.shop || log.merchant?.shop) && (
+                                        <div className="text-[10px] text-slate-500 font-mono">
+                                          {log.shop || log.merchant?.shop}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="py-3">
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 ${
+                                          log.apiType === "WEBHOOK"
+                                            ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                                            : "bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                                        }`}
+                                      >
+                                        {log.apiType}
+                                      </span>
+                                      <span className="text-slate-300 font-mono">{log.topic}</span>
+                                    </td>
+                                    <td className="py-3">
+                                      <span
+                                        className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                          log.status === "SUCCESS"
+                                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                            : log.status === "RATE_LIMITED"
+                                            ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                                            : log.status === "IGNORED"
+                                            ? "bg-slate-800 text-slate-400 border border-slate-700"
+                                            : "bg-red-500/10 text-red-400 border border-red-500/20"
+                                        }`}
+                                      >
+                                        {log.statusCode || 200} {log.status}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 text-slate-400">
+                                      {log.durationMs ? `${log.durationMs}ms` : "—"}
+                                    </td>
+                                    <td className="py-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedShopifyLog(log)}
+                                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-sans font-medium transition"
+                                      >
+                                        Inspect 🔍
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(shopifyPage - 1) * shopifyPageSize + 1} to{" "}
+                            {Math.min(shopifyPage * shopifyPageSize, filteredShopifyLogs.length)} of{" "}
+                            {filteredShopifyLogs.length} Shopify records
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={shopifyPage <= 1}
+                              onClick={() => setShopifyPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {shopifyPage} of {Math.ceil(filteredShopifyLogs.length / shopifyPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={shopifyPage >= Math.ceil(filteredShopifyLogs.length / shopifyPageSize)}
+                              onClick={() => setShopifyPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {/* VIEW 2: SHOPIFY GROUP BY STORE */}
+                  {shopifyGroupBy === "STORE" && (
+                    shopifyStoreGroups.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No stores found matching current filters.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">Store Domain / Merchant</th>
+                                <th className="pb-2.5">Total Shopify Ops</th>
+                                <th className="pb-2.5">Webhooks</th>
+                                <th className="pb-2.5">GraphQL / REST</th>
+                                <th className="pb-2.5">Success Rate</th>
+                                <th className="pb-2.5">Failures</th>
+                                <th className="pb-2.5">Avg Latency</th>
+                                <th className="pb-2.5">Last Activity</th>
+                                <th className="pb-2.5 text-right">Drilldown</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {shopifyStoreGroups
+                                .slice((shopifyPage - 1) * shopifyPageSize, shopifyPage * shopifyPageSize)
+                                .map((group) => {
+                                  const successRate = group.totalOps > 0 ? Math.round((group.successCount / group.totalOps) * 100) : 100;
+                                  return (
+                                    <tr key={group.store} className="hover:bg-slate-800/30 transition">
+                                      <td className="py-3 font-sans">
+                                        <div className="font-semibold text-white">{group.name}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono">{group.store}</div>
+                                      </td>
+                                      <td className="py-3 text-white font-bold">{group.totalOps}</td>
+                                      <td className="py-3 text-purple-300">{group.webhookCount}</td>
+                                      <td className="py-3 text-blue-300">{group.graphqlCount + group.restCount}</td>
+                                      <td className="py-3">
+                                        <span className="text-emerald-400 font-semibold">{successRate}%</span>
+                                        <span className="text-slate-500 text-[10px] ml-1">({group.successCount})</span>
+                                      </td>
+                                      <td className="py-3">
+                                        {group.failedCount > 0 ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-bold border border-red-500/30">
+                                            {group.failedCount}
+                                          </span>
+                                        ) : (
+                                          <span className="text-slate-500">0</span>
+                                        )}
+                                      </td>
+                                      <td className="py-3 text-slate-300">{group.avgLatency}ms</td>
+                                      <td className="py-3 text-slate-400 text-[10px] whitespace-nowrap">
+                                        {group.lastActivity.toLocaleString()}
+                                      </td>
+                                      <td className="py-3 text-right font-sans">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setApiSearch(group.store);
+                                            setShopifyGroupBy("NONE");
+                                            setShopifyPage(1);
+                                          }}
+                                          className="px-2.5 py-1 bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 rounded text-[10px] font-semibold transition"
+                                        >
+                                          View Store Logs 🔍
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
                                 })}
-                              </div>
-                            </td>
-                            <td className="py-3 text-white font-sans font-medium">
-                              {log.initiatedBy || "SHOPIFY_WEBHOOK"}
-                            </td>
-                            <td className="py-3 text-slate-300 font-sans">
-                              {log.shop || log.merchant?.shop || "Global"}
-                            </td>
-                            <td className="py-3">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5 ${
-                                log.apiType === "WEBHOOK" 
-                                  ? "bg-purple-500/10 text-purple-300 border border-purple-500/20" 
-                                  : "bg-blue-500/10 text-blue-300 border border-blue-500/20"
-                              }`}>
-                                {log.apiType}
-                              </span>
-                              <span className="text-slate-300 font-mono">{log.topic}</span>
-                            </td>
-                            <td className="py-3">
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                  log.status === "SUCCESS"
-                                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                                    : log.status === "RATE_LIMITED"
-                                    ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
-                                    : log.status === "IGNORED"
-                                    ? "bg-slate-800 text-slate-400 border border-slate-700"
-                                    : "bg-red-500/10 text-red-400 border border-red-500/20"
-                                }`}
-                              >
-                                {log.statusCode || 200} {log.status}
-                              </span>
-                            </td>
-                            <td className="py-3 text-slate-400">
-                              {log.durationMs ? `${log.durationMs}ms` : "—"}
-                            </td>
-                            <td className="py-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedShopifyLog(log)}
-                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-sans font-medium transition"
-                              >
-                                Inspect 🔍
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(shopifyPage - 1) * shopifyPageSize + 1} to{" "}
+                            {Math.min(shopifyPage * shopifyPageSize, shopifyStoreGroups.length)} of{" "}
+                            {shopifyStoreGroups.length} Stores
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={shopifyPage <= 1}
+                              onClick={() => setShopifyPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {shopifyPage} of {Math.ceil(shopifyStoreGroups.length / shopifyPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={shopifyPage >= Math.ceil(shopifyStoreGroups.length / shopifyPageSize)}
+                              onClick={() => setShopifyPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {/* VIEW 3: SHOPIFY GROUP BY WEBHOOK TOPIC */}
+                  {shopifyGroupBy === "WEBHOOK" && (
+                    shopifyWebhookGroups.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No Shopify webhooks found matching current filters.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">Webhook Topic</th>
+                                <th className="pb-2.5">Total Received</th>
+                                <th className="pb-2.5">Processed (200 OK)</th>
+                                <th className="pb-2.5">Failures</th>
+                                <th className="pb-2.5">Ignored</th>
+                                <th className="pb-2.5">Avg Latency</th>
+                                <th className="pb-2.5">Last Ingested</th>
+                                <th className="pb-2.5 text-right">Drilldown</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {shopifyWebhookGroups
+                                .slice((shopifyPage - 1) * shopifyPageSize, shopifyPage * shopifyPageSize)
+                                .map((group) => {
+                                  return (
+                                    <tr key={group.topic} className="hover:bg-slate-800/30 transition">
+                                      <td className="py-3 font-sans font-semibold text-white">
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/10 text-purple-300 border border-purple-500/20 mr-2 font-mono">
+                                          SHOPIFY
+                                        </span>
+                                        {group.topic}
+                                      </td>
+                                      <td className="py-3 text-white font-bold">{group.totalCount}</td>
+                                      <td className="py-3 text-emerald-400 font-semibold">{group.successCount}</td>
+                                      <td className="py-3">
+                                        {group.failedCount > 0 ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-bold">
+                                            {group.failedCount}
+                                          </span>
+                                        ) : (
+                                          <span className="text-slate-500">0</span>
+                                        )}
+                                      </td>
+                                      <td className="py-3 text-slate-400">{group.ignoredCount}</td>
+                                      <td className="py-3 text-slate-300">{group.avgLatency}ms</td>
+                                      <td className="py-3 text-slate-400 text-[10px] whitespace-nowrap">
+                                        {group.lastReceived.toLocaleString()}
+                                      </td>
+                                      <td className="py-3 text-right font-sans">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setApiSearch(group.topic);
+                                            setShopifyGroupBy("NONE");
+                                            setShopifyPage(1);
+                                          }}
+                                          className="px-2.5 py-1 bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 rounded text-[10px] font-semibold transition"
+                                        >
+                                          Filter Topic 🔍
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(shopifyPage - 1) * shopifyPageSize + 1} to{" "}
+                            {Math.min(shopifyPage * shopifyPageSize, shopifyWebhookGroups.length)} of{" "}
+                            {shopifyWebhookGroups.length} Webhook Topics
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={shopifyPage <= 1}
+                              onClick={() => setShopifyPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {shopifyPage} of {Math.ceil(shopifyWebhookGroups.length / shopifyPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={shopifyPage >= Math.ceil(shopifyWebhookGroups.length / shopifyPageSize)}
+                              onClick={() => setShopifyPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {/* VIEW 4: SHOPIFY GROUP BY API OPERATION */}
+                  {shopifyGroupBy === "API_TYPE" && (
+                    shopifyApiGroups.length === 0 ? (
+                      <div className="p-10 text-center bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-500">
+                        No Shopify operations found matching current filters.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-400 font-medium">
+                                <th className="pb-2.5">API Type & Operation</th>
+                                <th className="pb-2.5">Total Invocations</th>
+                                <th className="pb-2.5">Success Rate</th>
+                                <th className="pb-2.5">Failures</th>
+                                <th className="pb-2.5">Rate Limited</th>
+                                <th className="pb-2.5">Avg Latency</th>
+                                <th className="pb-2.5">Last Invocation</th>
+                                <th className="pb-2.5 text-right">Drilldown</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                              {shopifyApiGroups
+                                .slice((shopifyPage - 1) * shopifyPageSize, shopifyPage * shopifyPageSize)
+                                .map((group) => {
+                                  const successRate = group.totalCalls > 0 ? Math.round((group.successCount / group.totalCalls) * 100) : 100;
+                                  return (
+                                    <tr key={group.operationKey} className="hover:bg-slate-800/30 transition">
+                                      <td className="py-3">
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold mr-2 ${
+                                          group.apiType === "WEBHOOK"
+                                            ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                                            : "bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                                        }`}>
+                                          {group.apiType}
+                                        </span>
+                                        <span className="text-white font-mono">{group.topic}</span>
+                                      </td>
+                                      <td className="py-3 text-white font-bold">{group.totalCalls}</td>
+                                      <td className="py-3">
+                                        <span className="text-emerald-400 font-semibold">{successRate}%</span>
+                                        <span className="text-slate-500 text-[10px] ml-1">({group.successCount})</span>
+                                      </td>
+                                      <td className="py-3">
+                                        {group.failedCount > 0 ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300 font-bold">
+                                            {group.failedCount}
+                                          </span>
+                                        ) : (
+                                          <span className="text-slate-500">0</span>
+                                        )}
+                                      </td>
+                                      <td className="py-3 text-amber-300">{group.rateLimitedCount}</td>
+                                      <td className="py-3 text-slate-300">{group.avgLatency}ms</td>
+                                      <td className="py-3 text-slate-400 text-[10px] whitespace-nowrap">
+                                        {group.lastCall.toLocaleString()}
+                                      </td>
+                                      <td className="py-3 text-right font-sans">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setApiSearch(group.topic);
+                                            setShopifyGroupBy("NONE");
+                                            setShopifyPage(1);
+                                          }}
+                                          className="px-2.5 py-1 bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 rounded text-[10px] font-semibold transition"
+                                        >
+                                          Filter Operation 🔍
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                          <div>
+                            Showing {(shopifyPage - 1) * shopifyPageSize + 1} to{" "}
+                            {Math.min(shopifyPage * shopifyPageSize, shopifyApiGroups.length)} of{" "}
+                            {shopifyApiGroups.length} Operations
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={shopifyPage <= 1}
+                              onClick={() => setShopifyPage((p) => Math.max(1, p - 1))}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              ◀ Previous
+                            </button>
+
+                            <span className="px-2 font-mono text-[11px] text-slate-300">
+                              Page {shopifyPage} of {Math.ceil(shopifyApiGroups.length / shopifyPageSize) || 1}
+                            </span>
+
+                            <button
+                              type="button"
+                              disabled={shopifyPage >= Math.ceil(shopifyApiGroups.length / shopifyPageSize)}
+                              onClick={() => setShopifyPage((p) => p + 1)}
+                              className="px-3 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:hover:bg-slate-950 rounded text-xs text-white"
+                            >
+                              Next ▶
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+                </>
               )}
 
               {/* Meta Transaction JSON Inspector Modal */}
