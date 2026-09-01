@@ -4,6 +4,7 @@ import { logInfo, logWarn } from "../utils/logger.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 import { syncOrderUpdateToShopify } from "../utils/shopify-order.server";
 import { calculateMessageCost, checkAndTriggerSpendAlerts } from "../utils/meta-pricing.server";
+import { interpolateVariables } from "../utils/template.shared";
 
 /**
  * Meta Webhook Verification Handshake (GET).
@@ -224,7 +225,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               messageText.toLowerCase().includes("ask query") ||
               messageText.toLowerCase().includes("need help");
 
+            let handledSpecificAction = false;
+
             if (isConfirmAction && matchingOrder) {
+              handledSpecificAction = true;
               // 1. Mark Order as Confirmed in StorePing DB
               await db.orderConfirmation.update({
                 where: { id: matchingOrder.id },
@@ -254,6 +258,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 senderRole: "BOT",
               });
             } else if (isUpdateAddressAction && matchingOrder) {
+              handledSpecificAction = true;
               // 1. Mark Order as Update Requested in StorePing DB
               await db.orderConfirmation.update({
                 where: { id: matchingOrder.id },
@@ -281,18 +286,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 bodyText: promptReplyText,
                 senderRole: "BOT",
               });
-            } else if (isSupportAction) {
-              const supportReplyText = `💬 *Store Support Team*\n\nHello ${profileName || "there"}! We're here to help you with any questions regarding your order ${relatedOrderNumber || ""}.\n\nPlease tell us how we can assist you and an agent will reply shortly! 😊`;
-
-              await sendWhatsAppMessage({
-                merchantId: merchant.id,
-                recipientPhone: fromPhone,
-                customerName: profileName || "Customer",
-                eventType: "SUPPORT_REPLY",
-                bodyText: supportReplyText,
-                senderRole: "BOT",
-              });
             } else if (matchingOrder && matchingOrder.status === "UPDATE_REQUESTED" && msgType === "TEXT") {
+              handledSpecificAction = true;
               // If customer previously requested update and is now sending their new address text, save notes!
               await db.orderConfirmation.update({
                 where: { id: matchingOrder.id },
@@ -322,7 +317,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               });
             }
 
-            // Upsert Conversation
+            // Upsert Conversation in Live Inbox & Set Support Queue Status
             const conversation = await db.conversation.upsert({
               where: {
                 merchantId_customerPhone: {
@@ -339,7 +334,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 lastMessageText: messageText,
                 lastMessageAt: new Date(),
                 unreadCount: 1,
-                status: "ACTIVE",
+                status: "NEEDS_REPLY", // Added to Support Queue
                 cswExpiresAt,
               },
               update: {
@@ -349,12 +344,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 lastMessageText: messageText,
                 lastMessageAt: new Date(),
                 unreadCount: { increment: 1 },
-                status: "ACTIVE",
+                status: "NEEDS_REPLY", // Flagged for Agent Attention
                 cswExpiresAt,
               },
             });
 
-            // Insert ChatMessage
+            // Insert Customer ChatMessage into database
             await db.chatMessage.create({
               data: {
                 conversationId: conversation.id,
@@ -370,7 +365,95 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               },
             });
 
-            await logInfo(`Incoming WhatsApp ${msgType} from ${fromPhone}: "${messageText}"`, {
+            // 🤖 Automatic Support Greeting Flow (Flow 7)
+            if (!handledSpecificAction && merchant.supportChatEnabled) {
+              // Check if a bot auto-reply was sent recently (last 1 hour) to avoid spamming
+              const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+              const recentBotMessage = await db.chatMessage.findFirst({
+                where: {
+                  conversationId: conversation.id,
+                  sender: "BOT",
+                  createdAt: { gte: oneHourAgo },
+                },
+              });
+
+              if (!recentBotMessage) {
+                // Find or fallback to SUPPORT_AUTO_REPLY template
+                let tpl = await db.template.findFirst({
+                  where: { merchantId: merchant.id, eventType: "SUPPORT_AUTO_REPLY", isActive: true },
+                });
+
+                const customerDisplayName = profileName || matchingOrder?.customerName || "there";
+                const storeDisplayName = merchant.name || merchant.shop.replace(".myshopify.com", "");
+
+                let greetingBody = `Hi ${customerDisplayName}! Thanks for reaching out to *${storeDisplayName}* support. 😊\n\nWe have received your message and an agent will be with you shortly. If you are asking about an existing order, please provide your order number (e.g. #1002).`;
+                let greetingHeader = `👋 Welcome to ${storeDisplayName} Support`;
+                let greetingFooter = `${storeDisplayName} Team`;
+
+                if (tpl) {
+                  greetingBody = interpolateVariables(tpl.bodyText, {
+                    customer_name: customerDisplayName,
+                    store_name: storeDisplayName,
+                    order_number: relatedOrderNumber ? relatedOrderNumber.replace(/^#/, "") : "",
+                    order_name: relatedOrderNumber || "",
+                  });
+                  if (tpl.headerText) {
+                    greetingHeader = interpolateVariables(tpl.headerText, {
+                      customer_name: customerDisplayName,
+                      store_name: storeDisplayName,
+                    });
+                  }
+                  if (tpl.footerText) {
+                    greetingFooter = interpolateVariables(tpl.footerText, {
+                      store_name: storeDisplayName,
+                    });
+                  }
+                }
+
+                // Dispatch WhatsApp Greeting
+                const botSendRes = await sendWhatsAppMessage({
+                  merchantId: merchant.id,
+                  recipientPhone: fromPhone,
+                  customerName: customerDisplayName,
+                  eventType: "SUPPORT_AUTO_REPLY",
+                  bodyText: greetingBody,
+                  headerType: "TEXT",
+                  headerText: greetingHeader,
+                  footerText: greetingFooter,
+                  senderRole: "BOT",
+                });
+
+                if (botSendRes.success) {
+                  // Save Bot's message in Chat history
+                  await db.chatMessage.create({
+                    data: {
+                      conversationId: conversation.id,
+                      sender: "BOT",
+                      messageType: "TEXT",
+                      bodyText: greetingBody,
+                      status: "DELIVERED",
+                    },
+                  });
+
+                  // Record Job in Queue so Automations tab shows the completed event
+                  await db.job.create({
+                    data: {
+                      merchantId: merchant.id,
+                      jobType: "SEND_WHATSAPP",
+                      status: "COMPLETED",
+                      processedAt: new Date(),
+                      payload: {
+                        eventType: "SUPPORT_AUTO_REPLY",
+                        recipientPhone: fromPhone,
+                        customerName: customerDisplayName,
+                      },
+                    },
+                  }).catch(() => {});
+                }
+              }
+            }
+
+            await logInfo(`Incoming WhatsApp message from +${fromPhone}: "${messageText.slice(0, 100)}" (Status: NEEDS_REPLY)`, {
               shop: merchant.shop,
               source: "meta-webhook",
             });

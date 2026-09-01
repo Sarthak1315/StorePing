@@ -87,13 +87,14 @@ export async function cancelCartRecoveryJobs(merchantId: string, checkoutToken: 
  * Can be called via cron endpoint or background worker runner.
  */
 export async function processPendingJobs(limit = 20) {
-  const now = new Date();
+  // Allow a 5-second buffer so immediate (0-delay) jobs are always picked up immediately
+  const executionThreshold = new Date(Date.now() + 5000);
 
   // Find due jobs
   const pendingJobs = await db.job.findMany({
     where: {
       status: "PENDING",
-      runAt: { lte: now },
+      runAt: { lte: executionThreshold },
     },
     include: {
       merchant: true,
@@ -102,7 +103,7 @@ export async function processPendingJobs(limit = 20) {
     orderBy: { runAt: "asc" },
   });
 
-  if (pendingJobs.length === 0) return { processed: 0 };
+  if (pendingJobs.length === 0) return { processed: 0, totalFound: 0 };
 
   let processedCount = 0;
 
@@ -181,14 +182,32 @@ export async function processPendingJobs(limit = 20) {
       }
     }
 
-    // Find the active template for this event
-    const template = await db.template.findFirst({
+    // Find the active template for this event with fallback
+    let template = await db.template.findFirst({
       where: {
         merchantId: merchant.id,
         eventType: payload.eventType,
         isActive: true,
       },
     });
+
+    if (!template && payload.eventType === "ORDER_CONFIRM_ADDRESS") {
+      template = await db.template.findFirst({
+        where: { merchantId: merchant.id, eventType: "ORDER_CONFIRM", isActive: true },
+      });
+    } else if (!template && payload.eventType === "ORDER_CONFIRM") {
+      template = await db.template.findFirst({
+        where: { merchantId: merchant.id, eventType: "ORDER_CONFIRM_ADDRESS", isActive: true },
+      });
+    }
+
+    if (!template) {
+      // Re-seed and fetch default
+      await seedDefaultTemplates(merchant.id);
+      template = await db.template.findFirst({
+        where: { merchantId: merchant.id, eventType: payload.eventType },
+      });
+    }
 
     if (!template) {
       await db.job.update({
@@ -244,6 +263,21 @@ export async function processPendingJobs(limit = 20) {
         where: { id: job.id },
         data: { status: "COMPLETED", processedAt: new Date() },
       });
+
+      // Update OrderConfirmation record if this is an order confirmation event
+      if (orderNumber && (payload.eventType === "ORDER_CONFIRM_ADDRESS" || payload.eventType === "ORDER_CONFIRM")) {
+        const fullOrderNum = orderNumber.startsWith("#") ? orderNumber : `#${orderNumber}`;
+        await db.orderConfirmation.updateMany({
+          where: {
+            merchantId: merchant.id,
+            orderNumber: fullOrderNum,
+          },
+          data: {
+            lastSentAt: new Date(),
+          },
+        }).catch(() => {});
+      }
+
       processedCount++;
     } else {
       const isRateLimited = result.rateLimited || result.errorCode === 130429 || result.errorCode === 131056;

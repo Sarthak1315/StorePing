@@ -199,6 +199,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return json({ success: false, error: result.error || "Failed to send WhatsApp message", messageId: null, newPhone: null }, { status: 500 });
       }
 
+      // Mark conversation active and clear unread count
+      await db.conversation.updateMany({
+        where: { merchantId: merchant.id, customerPhone },
+        data: { status: "ACTIVE", unreadCount: 0 },
+      });
+
       await logInfo(`Merchant replied to customer ${customerPhone}`, { shop, source: "inbox" });
       return json({ success: true, error: null, messageId: result.messageId, newPhone: null, sentText: messageText, sentMediaUrl: mediaUrl });
     } catch (err: any) {
@@ -271,11 +277,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return json({ success: false, error: result.error || "Failed to send template message", messageId: null, newPhone: null }, { status: 500 });
       }
 
+      await db.conversation.updateMany({
+        where: { merchantId: merchant.id, customerPhone },
+        data: { status: "ACTIVE", unreadCount: 0 },
+      });
+
       await logInfo(`Template ${eventType} sent to ${customerPhone}`, { shop, source: "inbox" });
       return json({ success: true, error: null, messageId: result.messageId, newPhone: null });
     } catch (err: any) {
       return json({ success: false, error: err.message, messageId: null, newPhone: null });
     }
+  }
+
+  // 2.1 Update Conversation Status (Support Queue / Resolution)
+  if (intent === "updateStatus") {
+    const customerPhone = formData.get("customerPhone") as string;
+    const status = (formData.get("status") as string) || "RESOLVED";
+    if (customerPhone) {
+      await db.conversation.updateMany({
+        where: { merchantId: merchant.id, customerPhone },
+        data: { status, unreadCount: status === "RESOLVED" ? 0 : undefined },
+      });
+      await logInfo(`Conversation with ${customerPhone} status updated to ${status}`, { shop, source: "inbox" });
+    }
+    return json({ success: true, error: null, messageId: null, newPhone: null });
   }
 
   // 3. Start a New Conversation with Any Number
@@ -364,8 +389,9 @@ export default function LiveInboxPage() {
   // Instant 0ms Client State for Conversation Selection
   const [selectedPhone, setSelectedPhone] = useState<string>(initialSelectedPhone);
 
-  // Dual-Engine Search State
+  // Dual-Engine Search & Support Queue Filter State
   const [searchTerm, setSearchTerm] = useState<string>("");
+  const [supportFilter, setSupportFilter] = useState<"ALL" | "NEEDS_REPLY" | "ORDERS" | "RESOLVED">("ALL");
   const [replyText, setReplyText] = useState<string>("");
   const [replyMediaUrl, setReplyMediaUrl] = useState<string>("");
   const [showMediaInput, setShowMediaInput] = useState<boolean>(false);
@@ -391,29 +417,53 @@ export default function LiveInboxPage() {
     return (conversations || []) as ConversationType[];
   }, [conversations]);
 
-  // Engine 1: Instant 0ms In-Memory Keystroke Filtering
+  const needsReplyCount = useMemo(() => {
+    return conversationsList.filter((c) => c.status === "NEEDS_REPLY" || c.unreadCount > 0).length;
+  }, [conversationsList]);
+
+  const ordersCount = useMemo(() => {
+    return conversationsList.filter((c) => !!c.lastOrderNumber).length;
+  }, [conversationsList]);
+
+  const resolvedCount = useMemo(() => {
+    return conversationsList.filter((c) => c.status === "RESOLVED").length;
+  }, [conversationsList]);
+
+  // Engine 1: Instant 0ms Support Queue & Keystroke Filtering
   const filteredConversations: ConversationType[] = useMemo(() => {
-    if (!searchTerm.trim()) return conversationsList;
+    let list = conversationsList;
+
+    if (supportFilter === "NEEDS_REPLY") {
+      list = list.filter((c) => c.status === "NEEDS_REPLY" || c.unreadCount > 0);
+    } else if (supportFilter === "ORDERS") {
+      list = list.filter((c) => !!c.lastOrderNumber);
+    } else if (supportFilter === "RESOLVED") {
+      list = list.filter((c) => c.status === "RESOLVED");
+    }
+
+    if (!searchTerm.trim()) return list;
     const query = searchTerm.toLowerCase().trim();
     const cleanQuery = query.replace(/[^0-9]/g, "");
 
-    return conversationsList.filter((c: ConversationType) => {
+    return list.filter((c: ConversationType) => {
       const matchName = c.customerName?.toLowerCase().includes(query);
       const matchPhone = cleanQuery && c.customerPhone.includes(cleanQuery);
       const matchOrder = c.lastOrderNumber?.toLowerCase().includes(query);
       const matchText = c.lastMessageText?.toLowerCase().includes(query);
       return matchName || matchPhone || matchOrder || matchText;
     });
-  }, [conversationsList, searchTerm]);
+  }, [conversationsList, supportFilter, searchTerm]);
 
   // Derive Active Conversation in 0ms without server roundtrip
   const activeConversation: ConversationType | null = useMemo(() => {
     return (
+      filteredConversations.find((c: ConversationType) => c.customerPhone === selectedPhone) ||
       conversationsList.find((c: ConversationType) => c.customerPhone === selectedPhone) ||
+      filteredConversations[0] ||
       conversationsList[0] ||
       null
     );
-  }, [conversationsList, selectedPhone]);
+  }, [filteredConversations, conversationsList, selectedPhone]);
 
   // Confirmation Record for Active Conversation
   const activeConfirmation = useMemo(() => {
@@ -609,15 +659,50 @@ export default function LiveInboxPage() {
                 </Button>
               </div>
 
+              {/* Support Queue Filter Segment */}
+              <div style={{ padding: "8px 10px", borderBottom: "1px solid #e2e8f0", backgroundColor: "#f8fafc", display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                <Button
+                  size="micro"
+                  variant={supportFilter === "ALL" ? "primary" : "tertiary"}
+                  onClick={() => setSupportFilter("ALL")}
+                >
+                  {`All (${conversationsList.length})`}
+                </Button>
+                <Button
+                  size="micro"
+                  tone={needsReplyCount > 0 ? "critical" : undefined}
+                  variant={supportFilter === "NEEDS_REPLY" ? "primary" : "tertiary"}
+                  onClick={() => setSupportFilter("NEEDS_REPLY")}
+                >
+                  {`🚨 Queue (${needsReplyCount})`}
+                </Button>
+                <Button
+                  size="micro"
+                  variant={supportFilter === "ORDERS" ? "primary" : "tertiary"}
+                  onClick={() => setSupportFilter("ORDERS")}
+                >
+                  {`📦 Orders (${ordersCount})`}
+                </Button>
+                <Button
+                  size="micro"
+                  variant={supportFilter === "RESOLVED" ? "primary" : "tertiary"}
+                  onClick={() => setSupportFilter("RESOLVED")}
+                >
+                  {`✅ Resolved (${resolvedCount})`}
+                </Button>
+              </div>
+
               {/* Conversation List */}
-              <div style={{ maxHeight: "600px", overflowY: "auto" }}>
+              <div style={{ maxHeight: "560px", overflowY: "auto" }}>
                 {filteredConversations.length === 0 ? (
                   <Box padding="400">
                     <BlockStack gap="200" align="center">
                       <Text as="p" tone="subdued" alignment="center">
                         {searchTerm
                           ? "No conversations match your search."
-                          : "No WhatsApp conversations yet. Use 'Start Chat' or send a message from Orders!"}
+                          : supportFilter === "NEEDS_REPLY"
+                          ? "🎉 No open support tickets waiting in the queue!"
+                          : "No WhatsApp conversations in this view."}
                       </Text>
                     </BlockStack>
                   </Box>
@@ -625,6 +710,8 @@ export default function LiveInboxPage() {
                   filteredConversations.map((conv: ConversationType) => {
                     const isSelected = activeConversation?.id === conv.id;
                     const hasUnread = conv.unreadCount > 0;
+                    const isNeedsReply = conv.status === "NEEDS_REPLY" || hasUnread;
+                    const isResolved = conv.status === "RESOLVED";
                     const cswActive =
                       !conv.cswExpiresAt ||
                       new Date(conv.cswExpiresAt).getTime() > Date.now();
@@ -638,11 +725,15 @@ export default function LiveInboxPage() {
                           borderBottom: "1px solid #f1f5f9",
                           backgroundColor: isSelected
                             ? "#f0fdf4"
+                            : isNeedsReply
+                            ? "#fff7ed"
                             : hasUnread
                             ? "#fafafa"
                             : "#ffffff",
                           borderLeft: isSelected
                             ? "4px solid #16a34a"
+                            : isNeedsReply
+                            ? "4px solid #ea580c"
                             : "4px solid transparent",
                           cursor: "pointer",
                           transition: "all 0.15s ease",
@@ -653,19 +744,19 @@ export default function LiveInboxPage() {
                             <Avatar
                               customer
                               name={conv.customerName || "Customer"}
-                              initials={(conv.customerName ? conv.customerName.slice(0, 2).toUpperCase() : "WA")}
+                              initials={String(conv.customerName || "WA").slice(0, 2).toUpperCase()}
                               size="sm"
                             />
                             <div>
                               <Text
                                 as="span"
                                 variant="bodySm"
-                                fontWeight={isSelected || hasUnread ? "bold" : "regular"}
+                                fontWeight={isSelected || isNeedsReply || hasUnread ? "bold" : "regular"}
                               >
                                 {conv.customerName || "Customer"}
                               </Text>
                               {conv.lastOrderNumber && (
-                                <Tag>{conv.lastOrderNumber}</Tag>
+                                <Tag>{String(conv.lastOrderNumber)}</Tag>
                               )}
                             </div>
                           </InlineStack>
@@ -688,7 +779,7 @@ export default function LiveInboxPage() {
                                   fontWeight: "bold",
                                 }}
                               >
-                                {conv.unreadCount}
+                                {String(conv.unreadCount)}
                               </span>
                             )}
                           </InlineStack>
@@ -698,7 +789,17 @@ export default function LiveInboxPage() {
                           <Text as="p" variant="bodyXs" tone="subdued" truncate>
                             {conv.lastMessageText || "New conversation"}
                           </Text>
-                          <div style={{ marginTop: "3px" }}>
+                          <div style={{ marginTop: "4px", display: "flex", gap: "6px", alignItems: "center" }}>
+                            {isNeedsReply && (
+                              <Badge tone="critical" size="small">
+                                🚨 Needs Reply
+                              </Badge>
+                            )}
+                            {isResolved && (
+                              <Badge tone="success" size="small">
+                                ✅ Resolved
+                              </Badge>
+                            )}
                             {cswActive ? (
                               <Badge tone="success" size="small">
                                 🟢 24h Window Open
@@ -735,7 +836,7 @@ export default function LiveInboxPage() {
                       <Avatar
                         customer
                         name={activeConversation.customerName || "Customer"}
-                        initials={(activeConversation.customerName ? activeConversation.customerName.slice(0, 2).toUpperCase() : "WA")}
+                        initials={String(activeConversation.customerName || "WA").slice(0, 2).toUpperCase()}
                         size="md"
                       />
                       <div>
@@ -746,8 +847,14 @@ export default function LiveInboxPage() {
                           <Text as="span" variant="bodyXs" tone="subdued">
                             +{activeConversation.customerPhone}
                           </Text>
+                          {activeConversation.status === "NEEDS_REPLY" && (
+                            <Badge tone="critical">🚨 Support Ticket Open</Badge>
+                          )}
+                          {activeConversation.status === "RESOLVED" && (
+                            <Badge tone="success">✅ Ticket Resolved</Badge>
+                          )}
                           {activeConversation.lastOrderNumber && (
-                            <Tag>{activeConversation.lastOrderNumber}</Tag>
+                            <Tag>{String(activeConversation.lastOrderNumber)}</Tag>
                           )}
                           {activeConfirmation?.status === "CONFIRMED" && (
                             <Badge tone="success">✅ Address Confirmed</Badge>
@@ -760,12 +867,39 @@ export default function LiveInboxPage() {
                     </InlineStack>
 
                     <InlineStack gap="200" blockAlign="center">
+                      {activeConversation.status === "NEEDS_REPLY" ? (
+                        <Button
+                          size="slim"
+                          variant="primary"
+                          onClick={() => {
+                            const form = new FormData();
+                            form.append("intent", "updateStatus");
+                            form.append("customerPhone", activeConversation.customerPhone);
+                            form.append("status", "RESOLVED");
+                            fetcher.submit(form, { method: "POST" });
+                          }}
+                        >
+                          ✅ Mark as Resolved
+                        </Button>
+                      ) : (
+                        <Button
+                          size="slim"
+                          onClick={() => {
+                            const form = new FormData();
+                            form.append("intent", "updateStatus");
+                            form.append("customerPhone", activeConversation.customerPhone);
+                            form.append("status", "NEEDS_REPLY");
+                            fetcher.submit(form, { method: "POST" });
+                          }}
+                        >
+                          🚨 Flag for Support
+                        </Button>
+                      )}
                       <Button
                         size="slim"
-                        variant="primary"
                         onClick={() => setIsTemplateModalOpen(true)}
                       >
-                        📋 Send Template Message
+                        📋 Send Template
                       </Button>
                     </InlineStack>
                   </InlineStack>

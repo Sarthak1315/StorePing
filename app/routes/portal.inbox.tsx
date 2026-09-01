@@ -80,6 +80,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       lastMessageAt: c.lastMessageAt,
       unreadCount: c.unreadCount,
       lastOrderNumber: c.lastOrderNumber,
+      status: c.status,
     })),
     activeConversation,
     activeOrder,
@@ -159,16 +160,32 @@ export async function action({ request }: ActionFunctionArgs) {
         mediaId: uploadedMediaId || undefined,
         fileName: documentName || undefined,
         mediaType: mediaType || undefined,
+        senderRole: "AGENT",
       });
 
       if (!result.success) {
         return json({ success: false, error: result.error || "Failed to send message via WhatsApp.", updatedStatus: null as string | null }, { status: 400 });
       }
 
+      await db.conversation.updateMany({
+        where: { merchantId: user.merchantId, customerPhone },
+        data: { status: "ACTIVE", unreadCount: 0 },
+      });
+
       return json({ success: true, error: null as string | null, updatedStatus: null as string | null });
     } catch (err: any) {
       return json({ success: false, error: err.message || "An error occurred.", updatedStatus: null as string | null }, { status: 500 });
     }
+  }
+
+  // 1.1 Update Conversation Support Queue Status
+  if (intent === "update_conversation_status") {
+    const status = (formData.get("status") as string) || "RESOLVED";
+    await db.conversation.updateMany({
+      where: { merchantId: user.merchantId, customerPhone },
+      data: { status, unreadCount: status === "RESOLVED" ? 0 : undefined },
+    });
+    return json({ success: true, error: null as string | null, updatedStatus: status });
   }
 
   // 2. Order Confirmation Status Update
@@ -200,14 +217,23 @@ export default function PortalInbox() {
 
   const [messageInput, setMessageInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [supportFilter, setSupportFilter] = useState<"ALL" | "NEEDS_REPLY" | "ORDERS" | "RESOLVED">("ALL");
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [attachUrl, setAttachUrl] = useState("");
   const [attachType, setAttachType] = useState<"DOCUMENT" | "IMAGE">("DOCUMENT");
   const [attachFileName, setAttachFileName] = useState("Invoice.pdf");
 
+  const needsReplyCount = conversations.filter((c: any) => c.status === "NEEDS_REPLY" || c.unreadCount > 0).length;
+  const ordersCount = conversations.filter((c: any) => !!c.lastOrderNumber).length;
+  const resolvedCount = conversations.filter((c: any) => c.status === "RESOLVED").length;
+
   // Filter conversations
   const filteredConversations = conversations.filter((c: (typeof conversations)[number]) => {
+    if (supportFilter === "NEEDS_REPLY" && c.status !== "NEEDS_REPLY" && c.unreadCount === 0) return false;
+    if (supportFilter === "ORDERS" && !c.lastOrderNumber) return false;
+    if (supportFilter === "RESOLVED" && c.status !== "RESOLVED") return false;
+
     const matchesSearch =
       c.customerPhone.includes(searchQuery) ||
       (c.customerName && c.customerName.toLowerCase().includes(searchQuery.toLowerCase())) ||
@@ -221,25 +247,53 @@ export default function PortalInbox() {
       <div className="w-full md:w-80 lg:w-88 border-r border-[#222d34] bg-[#111b21] flex flex-col shrink-0 h-full">
         {/* Search & Header */}
         <div className="p-3.5 border-b border-[#222d34] bg-[#111b21]">
-          <div className="flex items-center justify-between mb-2.5">
+          <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-bold text-[#e9edef] flex items-center gap-2">
               <span className="text-base">💬</span>
-              <span>Chats</span>
+              <span>Live Support Queue</span>
             </h2>
             <span className="text-[11px] bg-[#202c33] text-[#00a884] font-mono px-2 py-0.5 rounded-full border border-[#2a3942]">
-              {conversations.length} Active
+              {conversations.length} Chats
             </span>
           </div>
 
-          <div className="relative">
+          <div className="relative mb-2.5">
             <input
               type="text"
-              placeholder="Search phone or customer..."
+              placeholder="Search phone, name or #1001..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-8 pr-3 py-1.5 bg-[#202c33] border border-[#2a3942] rounded-lg text-xs text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] transition"
             />
             <span className="absolute left-2.5 top-2 text-xs text-[#8696a0]">🔍</span>
+          </div>
+
+          {/* Support Queue Filter Pills */}
+          <div className="flex items-center gap-1 overflow-x-auto pb-1 text-[11px]">
+            <button
+              onClick={() => setSupportFilter("ALL")}
+              className={`px-2 py-1 rounded font-medium transition ${supportFilter === "ALL" ? "bg-[#00a884] text-slate-950 font-bold" : "bg-[#202c33] text-[#8696a0] hover:text-white"}`}
+            >
+              All ({conversations.length})
+            </button>
+            <button
+              onClick={() => setSupportFilter("NEEDS_REPLY")}
+              className={`px-2 py-1 rounded font-medium transition ${supportFilter === "NEEDS_REPLY" ? "bg-[#ea580c] text-white font-bold" : "bg-[#202c33] text-[#ea580c] hover:bg-[#ea580c]/20"}`}
+            >
+              🚨 Queue ({needsReplyCount})
+            </button>
+            <button
+              onClick={() => setSupportFilter("ORDERS")}
+              className={`px-2 py-1 rounded font-medium transition ${supportFilter === "ORDERS" ? "bg-[#00a884] text-slate-950 font-bold" : "bg-[#202c33] text-[#8696a0] hover:text-white"}`}
+            >
+              📦 Orders ({ordersCount})
+            </button>
+            <button
+              onClick={() => setSupportFilter("RESOLVED")}
+              className={`px-2 py-1 rounded font-medium transition ${supportFilter === "RESOLVED" ? "bg-[#00a884] text-slate-950 font-bold" : "bg-[#202c33] text-[#8696a0] hover:text-white"}`}
+            >
+              ✅ Done ({resolvedCount})
+            </button>
           </div>
         </div>
 
@@ -289,11 +343,23 @@ export default function PortalInbox() {
                       {c.lastMessageText || "New WhatsApp message"}
                     </p>
 
-                    {c.lastOrderNumber && (
-                      <span className="inline-block mt-1 text-[10px] bg-[#202c33] text-[#8696a0] px-1.5 py-0.2 rounded font-mono border border-[#2a3942]">
-                        Order {c.lastOrderNumber}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      {c.status === "NEEDS_REPLY" && (
+                        <span className="text-[10px] bg-[#ea580c]/20 text-[#ea580c] px-1.5 py-0.2 rounded font-semibold border border-[#ea580c]/40">
+                          🚨 Needs Reply
+                        </span>
+                      )}
+                      {c.status === "RESOLVED" && (
+                        <span className="text-[10px] bg-[#00a884]/20 text-[#00a884] px-1.5 py-0.2 rounded font-semibold border border-[#00a884]/40">
+                          ✅ Resolved
+                        </span>
+                      )}
+                      {c.lastOrderNumber && (
+                        <span className="text-[10px] bg-[#202c33] text-[#8696a0] px-1.5 py-0.2 rounded font-mono border border-[#2a3942]">
+                          Order {c.lastOrderNumber}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {c.unreadCount > 0 && (
@@ -326,6 +392,16 @@ export default function PortalInbox() {
                       ? `+${activeConversation.customerPhone}`
                       : activeConversation.customerName}
                   </h3>
+                  {activeConversation.status === "NEEDS_REPLY" && (
+                    <span className="text-[10px] bg-[#ea580c]/20 text-[#ea580c] px-1.5 py-0.2 rounded font-bold border border-[#ea580c]/40">
+                      🚨 Support Queue
+                    </span>
+                  )}
+                  {activeConversation.status === "RESOLVED" && (
+                    <span className="text-[10px] bg-[#00a884]/20 text-[#00a884] px-1.5 py-0.2 rounded font-bold border border-[#00a884]/40">
+                      ✅ Resolved
+                    </span>
+                  )}
                   <span className="text-[10px] bg-[#00a884]/20 text-[#00a884] px-1.5 py-0.2 rounded font-semibold border border-[#00a884]/30">
                     ✓ Verified WhatsApp
                   </span>
@@ -336,9 +412,35 @@ export default function PortalInbox() {
               </div>
             </div>
 
-            {/* 24-hour Customer Service Window Badge */}
-            <div className="text-right">
-              <span className="inline-flex items-center gap-1.5 text-[10px] bg-[#00a884]/15 text-[#00a884] border border-[#00a884]/30 px-2.5 py-1 rounded-full font-medium">
+            {/* Quick Status Action Button */}
+            <div className="flex items-center gap-2">
+              <Form method="post">
+                <input type="hidden" name="intent" value="update_conversation_status" />
+                <input type="hidden" name="customerPhone" value={activeConversation.customerPhone} />
+                {activeConversation.status === "NEEDS_REPLY" ? (
+                  <>
+                    <input type="hidden" name="status" value="RESOLVED" />
+                    <button
+                      type="submit"
+                      className="text-xs bg-[#00a884] hover:bg-[#00a884]/80 text-slate-950 font-bold px-3 py-1.5 rounded-lg transition cursor-pointer"
+                    >
+                      ✅ Mark as Resolved
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <input type="hidden" name="status" value="NEEDS_REPLY" />
+                    <button
+                      type="submit"
+                      className="text-xs bg-[#202c33] hover:bg-[#ea580c]/20 text-[#ea580c] border border-[#ea580c]/40 font-bold px-3 py-1.5 rounded-lg transition cursor-pointer"
+                    >
+                      🚨 Flag for Support
+                    </button>
+                  </>
+                )}
+              </Form>
+
+              <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] bg-[#00a884]/15 text-[#00a884] border border-[#00a884]/30 px-2.5 py-1 rounded-full font-medium">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#00a884] animate-pulse"></span>
                 24h Window Active
               </span>

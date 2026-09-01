@@ -49,30 +49,46 @@ export const action = async (args: ActionFunctionArgs) => {
     return new Response("OK", { status: 200 });
   }
 
-  const merchant = await db.merchant.findUnique({
+  const normalizedTopic = (topic || "").toUpperCase().replace(/[\/\.]/g, "_");
+
+  let merchant = await db.merchant.findUnique({
     where: { shop },
   });
 
-  if (!merchant || !merchant.isWhatsAppConnected) {
+  if (!merchant) {
+    merchant = await db.merchant.create({
+      data: {
+        shop,
+        name: shop.replace(".myshopify.com", ""),
+      },
+    });
+  }
+
+  if (!merchant.isWhatsAppConnected) {
+    await logWarn(`Webhook ${normalizedTopic} received for ${shop} but WhatsApp is not connected.`, { shop, source: "webhook" });
     return new Response("Merchant not active or WhatsApp disconnected", { status: 200 });
   }
 
   const data = payload as any;
 
   try {
-    switch (topic) {
+    switch (normalizedTopic) {
       // 🛒 Abandoned Checkout Created / Updated
       case "CHECKOUTS_CREATE":
       case "CHECKOUTS_UPDATE": {
         if (!merchant.cartRecoveryEnabled) break;
 
-        const customerPhone = normalizePhoneNumber(
+        const rawCustomerPhone =
           data.phone ||
           data.customer?.phone ||
           data.shipping_address?.phone ||
           data.billing_address?.phone ||
-          data.customer?.default_address?.phone
-        );
+          data.customer?.default_address?.phone ||
+          (Array.isArray(data.customer?.addresses) ? data.customer.addresses.find((a: any) => a?.phone)?.phone : null) ||
+          (Array.isArray(data.note_attributes) ? data.note_attributes.find((na: any) => na?.name && /phone|mobile|whatsapp/i.test(na.name))?.value : null) ||
+          (Array.isArray(data.custom_attributes) ? data.custom_attributes.find((na: any) => na?.name && /phone|mobile|whatsapp/i.test(na.name))?.value : null);
+
+        const customerPhone = normalizePhoneNumber(rawCustomerPhone);
         if (!customerPhone) break;
 
         const checkoutToken = data.token;
@@ -192,13 +208,17 @@ export const action = async (args: ActionFunctionArgs) => {
 
         if (!merchant.orderConfirmEnabled) break;
 
-        const customerPhone = normalizePhoneNumber(
+        const rawCustomerPhone =
           data.phone ||
           data.customer?.phone ||
           data.shipping_address?.phone ||
           data.billing_address?.phone ||
-          data.customer?.default_address?.phone
-        );
+          data.customer?.default_address?.phone ||
+          (Array.isArray(data.customer?.addresses) ? data.customer.addresses.find((a: any) => a?.phone)?.phone : null) ||
+          (Array.isArray(data.note_attributes) ? data.note_attributes.find((na: any) => na?.name && /phone|mobile|whatsapp/i.test(na.name))?.value : null) ||
+          (Array.isArray(data.custom_attributes) ? data.custom_attributes.find((na: any) => na?.name && /phone|mobile|whatsapp/i.test(na.name))?.value : null);
+
+        const customerPhone = normalizePhoneNumber(rawCustomerPhone);
 
         if (!customerPhone) {
           await logInfo(`Order #${data.order_number || data.name} has no customer mobile number attached. Skipped WhatsApp confirmation.`, {
@@ -321,13 +341,16 @@ export const action = async (args: ActionFunctionArgs) => {
         if (!merchant.orderShippedEnabled) break;
 
         const fulfillment = data.fulfillment || data;
-        const customerPhone = normalizePhoneNumber(
+        const rawFulfillmentPhone =
           data.phone ||
           data.destination?.phone ||
           data.customer?.phone ||
           data.shipping_address?.phone ||
-          data.billing_address?.phone
-        );
+          data.billing_address?.phone ||
+          fulfillment.destination?.phone ||
+          (Array.isArray(data.customer?.addresses) ? data.customer.addresses.find((a: any) => a?.phone)?.phone : null);
+
+        const customerPhone = normalizePhoneNumber(rawFulfillmentPhone);
 
         if (!customerPhone) break;
 

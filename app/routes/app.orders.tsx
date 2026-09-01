@@ -23,7 +23,7 @@ import {
   Icon,
 } from "@shopify/polaris";
 import { CheckIcon, AlertCircleIcon, ChatIcon, SendIcon, SearchIcon } from "@shopify/polaris-icons";
-import { authenticate } from "../shopify.server";
+import { authenticate, ensureWebhooksRegistered } from "../shopify.server";
 import db from "../db.server";
 import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 import { logInfo, logError } from "../utils/logger.server";
@@ -31,10 +31,14 @@ import { normalizePhoneNumber } from "../utils/phone.utils";
 import { seedDefaultTemplates } from "../utils/template.server";
 import { interpolateVariables } from "../utils/template.shared";
 import { syncOrderUpdateToShopify } from "../utils/shopify-order.server";
+import { enqueueJob, processPendingJobs } from "../utils/queue.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
+
+  // Ensure shop-specific webhooks are always registered with Shopify
+  ensureWebhooksRegistered(session).catch(() => {});
 
   let merchant = await db.merchant.findUnique({
     where: { shop },
@@ -193,6 +197,100 @@ export async function loader({ request }: LoaderFunctionArgs) {
       lastSentAt: record?.lastSentAt || null,
     };
   });
+
+  // If Order Confirmation automation is active, auto-process recent unprocessed orders
+  if (merchant.orderConfirmEnabled && merchant.isWhatsAppConnected) {
+    for (const ord of enrichedOrders) {
+      if (ord.confirmationStatus === "NOT_SENT" && ord.phone) {
+        const cleanOrderId = String(ord.id).replace(/.*\//, "");
+        const existingJob = await db.job.findFirst({
+          where: {
+            merchantId: merchant.id,
+            status: { in: ["PENDING", "PROCESSING", "COMPLETED"] },
+            payload: {
+              path: ["orderId"],
+              equals: cleanOrderId,
+            },
+          },
+        });
+
+        if (!existingJob) {
+          try {
+            const hasAddressTpl = templates.some(
+              (t) => t.eventType === "ORDER_CONFIRM_ADDRESS" && t.isActive
+            );
+            const targetEventType = hasAddressTpl ? "ORDER_CONFIRM_ADDRESS" : "ORDER_CONFIRM";
+
+            // Create OrderConfirmation record
+            await db.orderConfirmation.upsert({
+              where: {
+                merchantId_orderNumber: {
+                  merchantId: merchant.id,
+                  orderNumber: ord.orderNumber,
+                },
+              },
+              create: {
+                merchantId: merchant.id,
+                orderId: cleanOrderId,
+                orderNumber: ord.orderNumber,
+                customerPhone: ord.phone,
+                customerName: ord.customerName,
+                totalAmount: ord.totalAmount,
+                currency: ord.currency,
+                shippingAddress: ord.shippingAddress,
+                itemsSummary: ord.items,
+                status: "PENDING",
+                lastSentAt: new Date(),
+              },
+              update: {
+                customerPhone: ord.phone,
+                customerName: ord.customerName,
+                totalAmount: ord.totalAmount,
+                currency: ord.currency,
+                shippingAddress: ord.shippingAddress,
+                itemsSummary: ord.items,
+                lastSentAt: new Date(),
+              },
+            });
+
+            // Enqueue Job into storeping_Job
+            await enqueueJob(
+              merchant.id,
+              "SEND_WHATSAPP",
+              {
+                recipientPhone: ord.phone,
+                customerName: ord.customerName,
+                eventType: targetEventType,
+                orderId: cleanOrderId,
+                templateVariables: {
+                  customer_name: ord.customerName,
+                  order_number: ord.orderNumber.replace(/^#/, ""),
+                  order_name: ord.orderNumber,
+                  total_amount: ord.totalAmount,
+                  total_price: ord.totalAmount,
+                  currency: ord.currency,
+                  cart_items: ord.items,
+                  items: ord.items,
+                  shipping_address: ord.shippingAddress,
+                  customer_phone: ord.phone,
+                  tracking_url: `https://${shop}/account/orders`,
+                  store_name: merchant.name || shop.replace(".myshopify.com", ""),
+                },
+              },
+              0
+            );
+
+            // Process immediately
+            await processPendingJobs(5);
+            ord.confirmationStatus = "PENDING";
+            ord.lastSentAt = new Date();
+          } catch (autoErr: any) {
+            console.warn("[StorePing] Auto order confirmation dispatch notice:", autoErr);
+          }
+        }
+      }
+    }
+  }
 
   return json({
     shop,
@@ -369,6 +467,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const customerName = (formData.get("customerName") as string) || "there";
     const checkoutUrl = (formData.get("checkoutUrl") as string) || `https://${shop}/checkout`;
     const discountCode = (formData.get("discountCode") as string) || "SAVE10";
+    const eventType = (formData.get("eventType") as string) || "CART_RECOVERY_1";
     let recipientPhone = ((formData.get("phone") as string) || "").trim();
 
     if (!recipientPhone) {
@@ -378,18 +477,42 @@ export async function action({ request }: ActionFunctionArgs) {
     let cleanPhone = recipientPhone.replace(/[^0-9]/g, "");
     if (cleanPhone.length === 10) cleanPhone = `91${cleanPhone}`;
 
-    const bodyText = `🛒 Hey ${customerName}, you left items in your shopping cart at ${merchant.name || shop}! Use code ${discountCode} for 10% off your order: ${checkoutUrl}`;
+    // Find active template
+    const template = await db.template.findFirst({
+      where: { merchantId: merchant.id, eventType },
+    });
+
+    const templateVariables = {
+      customer_name: customerName,
+      cart_items: "Items in your cart",
+      items: "Items in your cart",
+      total_amount: "0.00",
+      currency: merchant.currency || "INR",
+      checkout_url: checkoutUrl,
+      store_name: merchant.name || shop.replace(".myshopify.com", ""),
+      discount_code: discountCode,
+    };
+
+    let bodyText = template ? interpolateVariables(template.bodyText, templateVariables) : `🛒 Hey ${customerName}, you left items in your shopping cart at ${merchant.name || shop}! Complete your order now with discount code ${discountCode}: ${checkoutUrl}`;
+    let headerText = template?.headerText ? interpolateVariables(template.headerText, templateVariables) : "";
+    let buttonUrl = template?.buttonUrl ? interpolateVariables(template.buttonUrl, templateVariables) : checkoutUrl;
+    let buttons = (template?.buttons as any[]) || [];
 
     try {
       const result = await sendWhatsAppMessage({
         merchantId: merchant.id,
         recipientPhone: cleanPhone,
         customerName,
-        eventType: "CART_RECOVERY_1",
+        eventType,
         bodyText,
-        buttonType: "CTA_URL",
-        buttonText: "🛒 Complete My Order",
-        buttonUrl: checkoutUrl,
+        headerType: template?.headerType || "NONE",
+        headerText: headerText || undefined,
+        headerMediaUrl: template?.headerMediaUrl || undefined,
+        footerText: template?.footerText ? interpolateVariables(template.footerText, templateVariables) : undefined,
+        buttonType: template?.buttonType || "CTA_URL",
+        buttonText: template?.buttonText || "🛒 Complete My Order",
+        buttonUrl: buttonUrl || checkoutUrl,
+        buttons: buttons.length > 0 ? buttons : undefined,
         senderRole: "MERCHANT",
       });
 
@@ -397,11 +520,35 @@ export async function action({ request }: ActionFunctionArgs) {
         return json<ActionData>({ success: false, error: result.error || "Failed to send cart recovery" }, { status: 500 });
       }
 
+      // Record Job in Queue as COMPLETED so it shows in Automations
+      await db.job.create({
+        data: {
+          merchantId: merchant.id,
+          jobType: "SEND_WHATSAPP",
+          status: "COMPLETED",
+          processedAt: new Date(),
+          payload: {
+            eventType,
+            recipientPhone: cleanPhone,
+            customerName,
+            templateVariables,
+          },
+        },
+      }).catch(() => {});
+
+      // Update CartRecovery status
+      await db.cartRecovery.updateMany({
+        where: { merchantId: merchant.id, customerPhone: cleanPhone },
+        data: { status: "SENT", sequenceStep: eventType === "CART_RECOVERY_2" ? 2 : 1 },
+      }).catch(() => {});
+
+      await logInfo(`Manual cart recovery dispatched to +${cleanPhone}`, { shop, source: "orders" });
+
       return json<ActionData>({
         success: true,
         phone: cleanPhone,
         recovered: true,
-        message: `Cart recovery message sent to +${cleanPhone}!`,
+        message: `🛒 Cart recovery message successfully sent to +${cleanPhone}!`,
       });
     } catch (err: any) {
       return json<ActionData>({ success: false, error: err.message }, { status: 500 });
@@ -494,6 +641,8 @@ export default function OrdersManualPage() {
   const [isCartModalOpen, setIsCartModalOpen] = useState(false);
   const [selectedCart, setSelectedCart] = useState<any>(null);
   const [cartPhone, setCartPhone] = useState("");
+  const [cartEventType, setCartEventType] = useState("CART_RECOVERY_1");
+  const [cartDiscountCode, setCartDiscountCode] = useState("SAVE10");
 
   const isSubmitting = fetcher.state !== "idle";
 
@@ -540,6 +689,8 @@ export default function OrdersManualPage() {
   const handleOpenCartModal = (cart: any) => {
     setSelectedCart(cart);
     setCartPhone(cart.customerPhone || "");
+    setCartEventType("CART_RECOVERY_1");
+    setCartDiscountCode(cart.discountCode || "SAVE10");
     setIsCartModalOpen(true);
   };
 
@@ -547,9 +698,10 @@ export default function OrdersManualPage() {
     if (!selectedCart || !cartPhone.trim()) return;
     const form = new FormData();
     form.append("intent", "sendCartRecovery");
-    form.append("customerName", selectedCart.customerName);
-    form.append("checkoutUrl", selectedCart.checkoutUrl);
-    form.append("discountCode", selectedCart.discountCode || "SAVE10");
+    form.append("customerName", selectedCart.customerName || "Customer");
+    form.append("checkoutUrl", selectedCart.checkoutUrl || "");
+    form.append("discountCode", cartDiscountCode || "SAVE10");
+    form.append("eventType", cartEventType);
     form.append("phone", cartPhone.trim());
     fetcher.submit(form, { method: "POST" });
     setIsCartModalOpen(false);
@@ -559,6 +711,38 @@ export default function OrdersManualPage() {
   const activeModalTemplate = useMemo(() => {
     return templates.find((t: any) => t.eventType === selectedEventType) || templates[0];
   }, [templates, selectedEventType]);
+
+  // Find currently selected template for cart recovery preview in modal
+  const activeCartModalTemplate = useMemo(() => {
+    return templates.find((t: any) => t.eventType === cartEventType) || templates.find((t: any) => t.eventType === "CART_RECOVERY_1") || templates[0];
+  }, [templates, cartEventType]);
+
+  // Interpolated Live Preview in Cart Modal
+  const cartPreviewData = useMemo(() => {
+    if (!selectedCart || !activeCartModalTemplate) return { body: "", header: "", buttons: [] };
+
+    const lineItemsSummary = Array.isArray(selectedCart.lineItems)
+      ? selectedCart.lineItems.map((i: any) => `${i.title} (x${i.quantity})`).join(", ")
+      : "Selected Items in Cart";
+
+    const vars = {
+      customer_name: selectedCart.customerName || "there",
+      cart_items: lineItemsSummary,
+      items: lineItemsSummary,
+      total_amount: parseFloat(selectedCart.cartTotal || "0").toFixed(2),
+      total_price: parseFloat(selectedCart.cartTotal || "0").toFixed(2),
+      currency: selectedCart.currency || "INR",
+      checkout_url: selectedCart.checkoutUrl || `https://${shop}/checkout`,
+      store_name: merchant?.name || shop.replace(".myshopify.com", ""),
+      discount_code: cartDiscountCode || "SAVE10",
+    };
+
+    const body = interpolateVariables(activeCartModalTemplate.bodyText, vars);
+    const header = interpolateVariables(activeCartModalTemplate.headerText, vars);
+    const buttons = (activeCartModalTemplate.buttons as any[]) || [];
+
+    return { body, header, buttons };
+  }, [selectedCart, activeCartModalTemplate, cartDiscountCode, shop, merchant]);
 
   // Interpolated Live Preview in Modal
   const previewData = useMemo(() => {
@@ -1046,20 +1230,102 @@ export default function OrdersManualPage() {
       >
         <Modal.Section>
           <FormLayout>
-            <Text as="p" variant="bodySm">
-              Customer: <b>{selectedCart?.customerName || "Customer"}</b> • Value: <b>{selectedCart?.currency} {selectedCart?.cartTotal}</b>
-            </Text>
-            <TextField
-              label="Customer WhatsApp Number"
-              placeholder={merchant?.phone ? `+${merchant.phone.replace(/[^0-9]/g, "")}` : "+91 9876543210"}
-              value={cartPhone}
-              onChange={setCartPhone}
-              autoComplete="off"
-              helpText="Include country code (e.g. +91 9876543210)."
+            <Box background="bg-surface-secondary" padding="300" borderRadius="200" borderWidth="025" borderColor="border">
+              <BlockStack gap="050">
+                <Text as="p" variant="bodySm" fontWeight="bold">
+                  Customer: {selectedCart?.customerName || "Customer"} • Cart Value: {selectedCart?.currency} {parseFloat(selectedCart?.cartTotal || "0").toFixed(2)}
+                </Text>
+                <Text as="p" variant="bodyXs" tone="subdued">
+                  Items: {Array.isArray(selectedCart?.lineItems) ? selectedCart.lineItems.map((i: any) => `${i.title} (x${i.quantity})`).join(", ") : "Cart Items"}
+                </Text>
+              </BlockStack>
+            </Box>
+
+            <Select
+              label="Select Recovery Message Template"
+              options={[
+                { label: "🛒 Step 1: Gentle Cart Reminder (30 min)", value: "CART_RECOVERY_1" },
+                { label: "🎁 Step 2: Cart Urgency + Special Discount (6 hr)", value: "CART_RECOVERY_2" },
+              ]}
+              value={cartEventType}
+              onChange={setCartEventType}
             />
-            <Text as="p" variant="bodyXs" tone="subdued">
-              Includes a 1-click checkout recovery link with discount code <b>{selectedCart?.discountCode || "SAVE10"}</b>.
-            </Text>
+
+            <InlineStack gap="300">
+              <div style={{ flex: 2 }}>
+                <TextField
+                  label="Customer WhatsApp Number"
+                  placeholder={merchant?.phone ? `+${merchant.phone.replace(/[^0-9]/g, "")}` : "+91 9876543210"}
+                  value={cartPhone}
+                  onChange={setCartPhone}
+                  autoComplete="off"
+                  helpText="Include country code (+91)."
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <TextField
+                  label="Discount Coupon Code"
+                  value={cartDiscountCode}
+                  onChange={setCartDiscountCode}
+                  placeholder="SAVE10"
+                  autoComplete="off"
+                />
+              </div>
+            </InlineStack>
+
+            {/* Live Cart Message Preview */}
+            <Box
+              background="bg-surface-secondary"
+              padding="300"
+              borderRadius="200"
+              borderWidth="025"
+              borderColor="border"
+            >
+              <BlockStack gap="200">
+                <Text as="p" variant="headingXs" tone="subdued">
+                  📱 LIVE WHATSAPP CART PREVIEW
+                </Text>
+                <div
+                  style={{
+                    backgroundColor: "#e7fed8",
+                    padding: "12px",
+                    borderRadius: "8px",
+                    borderLeft: "4px solid #25d366",
+                    fontSize: "13px",
+                    lineHeight: "1.45",
+                    whiteSpace: "pre-wrap",
+                    color: "#111827",
+                  }}
+                >
+                  {cartPreviewData.header && (
+                    <div style={{ fontWeight: "bold", marginBottom: "6px", color: "#075e54" }}>
+                      {cartPreviewData.header}
+                    </div>
+                  )}
+                  <div>{cartPreviewData.body}</div>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "8px" }}>
+                    {activeCartModalTemplate?.footerText || "Reply STOP to unsubscribe"}
+                  </div>
+
+                  <div style={{ marginTop: "10px" }}>
+                    <div
+                      style={{
+                        backgroundColor: "#ffffff",
+                        color: "#00a884",
+                        fontWeight: 600,
+                        padding: "8px 12px",
+                        borderRadius: "6px",
+                        textAlign: "center",
+                        border: "1px solid #d1d5db",
+                        fontSize: "12px",
+                      }}
+                    >
+                      🛒 Complete My Order
+                    </div>
+                  </div>
+                </div>
+              </BlockStack>
+            </Box>
           </FormLayout>
         </Modal.Section>
       </Modal>

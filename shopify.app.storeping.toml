@@ -11,8 +11,8 @@ automatically_update_urls_on_dev = true
 dev_store_url = ""
 
 [access_scopes]
-# Critical scopes for Orders, Checkouts, Customers, Fulfillments, Discounts, and Products
-scopes = "read_checkouts,read_customers,read_discounts,read_fulfillments,read_orders,read_products,write_checkouts,write_discounts,write_fulfillments,write_orders"
+# Critical scopes for Orders, Draft Orders, Checkouts, Customers, Fulfillments, Discounts, and Products
+scopes = "read_checkouts,read_customers,read_discounts,read_draft_orders,read_fulfillments,read_orders,read_products,write_checkouts,write_discounts,write_draft_orders,write_fulfillments,write_orders"
 
 [auth]
 redirect_urls = [
@@ -36,6 +36,10 @@ api_version = "2025-01"
   [[webhooks.subscriptions]]
   topics = ["app/scopes_update"]
   uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = ["orders/create", "orders/fulfilled", "fulfillments/create", "fulfillments/update", "checkouts/create", "checkouts/update"]
+  uri = "/webhooks"
 
 [pos]
 embedded = false

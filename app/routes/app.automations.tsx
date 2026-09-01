@@ -23,11 +23,13 @@ import {
   Tooltip,
   Icon,
 } from "@shopify/polaris";
-import { authenticate } from "../shopify.server";
+import { authenticate, ensureWebhooksRegistered } from "../shopify.server";
 import db from "../db.server";
 import { logInfo } from "../utils/logger.server";
-import { cancelJobById, runJobImmediately, retryJobById } from "../utils/queue.server";
+import { cancelJobById, runJobImmediately, retryJobById, enqueueJob, processPendingJobs } from "../utils/queue.server";
 import { fetchShopifyDiscounts, createShopifyBasicDiscount, type ShopifyDiscountOption } from "../utils/shopify-discount.server";
+import { normalizePhoneNumber } from "../utils/phone.utils";
+import { seedDefaultTemplates } from "../utils/template.server";
 
 export type AutomationActionData = {
   success?: boolean;
@@ -38,6 +40,9 @@ export type AutomationActionData = {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
+
+  // Ensure shop-specific webhooks are always registered with Shopify
+  ensureWebhooksRegistered(session).catch(() => {});
 
   const merchant = await db.merchant.findUnique({
     where: { shop },
@@ -103,7 +108,85 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json<AutomationActionData>({ success: true, message: "All scheduled automation jobs have been stopped." });
   }
 
-  // 5. Save Automation Flow Toggles & 3-Model Abandoned Cart Configuration
+  // 5. Test Order Automation Simulation
+  if (intent === "testOrderAutomation") {
+    const testPhone = (formData.get("testPhone") as string)?.trim() || merchant.connectedPhoneNumber || "";
+    const cleanPhone = normalizePhoneNumber(testPhone);
+
+    if (!cleanPhone) {
+      return json<AutomationActionData>({ success: false, error: "Please enter a valid mobile number for the test simulation." }, { status: 400 });
+    }
+
+    const testOrderNum = `#TEST-${Math.floor(1000 + Math.random() * 9000)}`;
+    const testOrderId = `test_${Date.now()}`;
+
+    // Ensure templates exist
+    await seedDefaultTemplates(merchant.id);
+
+    // Upsert test order confirmation record
+    await db.orderConfirmation.upsert({
+      where: {
+        merchantId_orderNumber: {
+          merchantId: merchant.id,
+          orderNumber: testOrderNum,
+        },
+      },
+      create: {
+        merchantId: merchant.id,
+        orderId: testOrderId,
+        orderNumber: testOrderNum,
+        customerPhone: cleanPhone,
+        customerName: "Test Customer",
+        totalAmount: "1499.00",
+        currency: merchant.currency || "INR",
+        shippingAddress: "402 Silicon Heights, MG Road, Mumbai, MH, 400001",
+        itemsSummary: "Premium Denim Jacket (x1), Cotton T-Shirt (x2)",
+        status: "PENDING",
+        lastSentAt: new Date(),
+      },
+      update: {
+        customerPhone: cleanPhone,
+        lastSentAt: new Date(),
+      },
+    });
+
+    // Enqueue job into storeping_Job
+    await enqueueJob(
+      merchant.id,
+      "SEND_WHATSAPP",
+      {
+        recipientPhone: cleanPhone,
+        customerName: "Test Customer",
+        eventType: "ORDER_CONFIRM_ADDRESS",
+        orderId: testOrderId,
+        templateVariables: {
+          customer_name: "Test Customer",
+          order_number: testOrderNum.replace(/^#/, ""),
+          order_name: testOrderNum,
+          total_amount: "1499.00",
+          total_price: "1499.00",
+          currency: merchant.currency || "INR",
+          cart_items: "Premium Denim Jacket (x1), Cotton T-Shirt (x2)",
+          items: "Premium Denim Jacket (x1), Cotton T-Shirt (x2)",
+          shipping_address: "402 Silicon Heights, MG Road, Mumbai, MH, 400001",
+          customer_phone: cleanPhone,
+          tracking_url: `https://${shop}/account/orders`,
+          store_name: merchant.name || shop.replace(".myshopify.com", ""),
+        },
+      },
+      0
+    );
+
+    // Process immediately
+    const procResult = await processPendingJobs(5);
+
+    return json<AutomationActionData>({
+      success: true,
+      message: `🎉 Test order automation triggered! Order ${testOrderNum} was enqueued and processed (${procResult.processed > 0 ? "Delivered to WhatsApp ✓" : "Queued in Live Status"}). Check your WhatsApp!`,
+    });
+  }
+
+  // 6. Save Automation Flow Toggles & 3-Model Abandoned Cart Configuration
   const cartRecoveryEnabled = formData.get("cartRecoveryEnabled") === "true";
   const cartRecoveryStrategy = (formData.get("cartRecoveryStrategy") as string) || "DYNAMIC_ONETIME";
   const cartStep1Enabled = formData.get("cartStep1Enabled") === "true";
@@ -206,6 +289,7 @@ export default function AutomationsPage() {
   const [reEngagement, setReEngagement] = useState(merchant?.reEngagementEnabled ?? true);
   const [supportChat, setSupportChat] = useState(merchant?.supportChatEnabled ?? true);
   const [codVerification, setCodVerification] = useState(merchant?.codVerificationEnabled ?? true);
+  const [testPhone, setTestPhone] = useState(merchant?.connectedPhoneNumber || "");
 
   const isSubmitting = fetcher.state !== "idle";
 
@@ -894,26 +978,68 @@ export default function AutomationsPage() {
               </Layout>
             ) : (
               /* Live Queue & Job Status Tab */
-              <Card padding="0">
-                {jobRows.length === 0 ? (
-                  <Box padding="600">
-                    <BlockStack gap="200" align="center">
-                      <Text as="p" tone="subdued" alignment="center">
-                        No active or scheduled automation jobs in the queue.
-                      </Text>
-                      <Text as="p" variant="bodyXs" tone="subdued" alignment="center">
-                        When an order is created or a checkout is abandoned, StorePing automatically schedules the job and shows its position, timer, and Stop button here.
-                      </Text>
-                    </BlockStack>
-                  </Box>
-                ) : (
-                  <DataTable
-                    columnContentTypes={["text", "text", "text", "text", "text"]}
-                    headings={["Automation Event & Customer", "Status", "Schedule / Position", "Attempts", "Job Controls"]}
-                    rows={jobRows}
-                  />
-                )}
-              </Card>
+              <BlockStack gap="400">
+                {/* 🧪 Instant Test & Verify Automation Card */}
+                <Card>
+                  <BlockStack gap="300">
+                    <InlineStack align="space-between" blockAlign="center">
+                      <BlockStack gap="050">
+                        <Text as="h3" variant="headingMd">🧪 Test Order Automation Pipeline</Text>
+                        <Text as="p" tone="subdued">
+                          Simulate an immediate order creation event to verify that queue jobs are created and WhatsApp messages are instantly dispatched to your phone.
+                        </Text>
+                      </BlockStack>
+                      <Badge tone="info">Instant Dispatch</Badge>
+                    </InlineStack>
+                    <Divider />
+                    <InlineStack gap="300" blockAlign="end">
+                      <div style={{ flex: 1, maxWidth: "320px" }}>
+                        <TextField
+                          label="Recipient Mobile (with country code)"
+                          value={testPhone}
+                          onChange={(val) => setTestPhone(val)}
+                          placeholder="+919879020010"
+                          autoComplete="off"
+                          helpText="e.g. +91 98790 20010 or 9879020010"
+                        />
+                      </div>
+                      <Button
+                        variant="primary"
+                        loading={isSubmitting && fetcher.formData?.get("intent") === "testOrderAutomation"}
+                        onClick={() => {
+                          fetcher.submit(
+                            { intent: "testOrderAutomation", testPhone },
+                            { method: "POST" }
+                          );
+                        }}
+                      >
+                        ⚡ Trigger Test Order Automation
+                      </Button>
+                    </InlineStack>
+                  </BlockStack>
+                </Card>
+
+                <Card padding="0">
+                  {jobRows.length === 0 ? (
+                    <Box padding="600">
+                      <BlockStack gap="200" align="center">
+                        <Text as="p" tone="subdued" alignment="center">
+                          No active or scheduled automation jobs in the queue.
+                        </Text>
+                        <Text as="p" variant="bodyXs" tone="subdued" alignment="center">
+                          When an order is created or a checkout is abandoned, StorePing automatically schedules the job and shows its position, timer, and Stop button here.
+                        </Text>
+                      </BlockStack>
+                    </Box>
+                  ) : (
+                    <DataTable
+                      columnContentTypes={["text", "text", "text", "text", "text"]}
+                      headings={["Automation Event & Customer", "Status", "Schedule / Position", "Attempts", "Job Controls"]}
+                      rows={jobRows}
+                    />
+                  )}
+                </Card>
+              </BlockStack>
             )}
           </Box>
         </Tabs>

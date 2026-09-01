@@ -323,7 +323,7 @@ export interface SendWhatsAppMessageOptions {
   buttonText?: string | null;
   buttonUrl?: string | null;
   buttons?: Array<{ id: string; text?: string; title?: string; type?: string; url?: string }>;
-  senderRole?: "BOT" | "MERCHANT";
+  senderRole?: "BOT" | "MERCHANT" | "AGENT";
   isInsideCSW?: boolean;
 }
 

@@ -16,7 +16,7 @@ import {
   Box,
   List,
 } from "@shopify/polaris";
-import { authenticate } from "../shopify.server";
+import { authenticate, ensureWebhooksRegistered } from "../shopify.server";
 import db from "../db.server";
 import { seedDefaultTemplates } from "../utils/template.server";
 import { refreshWabaHealth } from "../utils/meta-whatsapp.server";
@@ -25,6 +25,9 @@ import { getMerchantBillingSummary } from "../utils/meta-pricing.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
+
+  // Ensure shop-specific webhooks are always registered with Shopify
+  ensureWebhooksRegistered(session).catch(() => {});
 
   // Find or create merchant
   let merchant = await db.merchant.findUnique({

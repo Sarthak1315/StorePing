@@ -63,6 +63,13 @@ const shopify = shopifyApp({
       callbackUrl: "/webhooks",
     },
   },
+  hooks: {
+    afterAuth: async ({ session }: { session: any }) => {
+      shopify.registerWebhooks({ session }).catch((err: any) => {
+        console.warn("[StorePing] Webhooks registration notice in afterAuth:", err?.message || err);
+      });
+    },
+  },
   future: {
     unstable_newEmbeddedAuthStrategy: true,
     expiringOfflineAccessTokens: true,
@@ -80,3 +87,16 @@ export const unauthenticated = shopify.unauthenticated;
 export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
+
+/**
+ * Non-blocking helper to ensure shop-specific webhooks are always registered with Shopify
+ */
+export async function ensureWebhooksRegistered(session: any) {
+  if (!session) return;
+  try {
+    await shopify.registerWebhooks({ session });
+  } catch (err: any) {
+    // Non-blocking log
+    console.debug("[StorePing] Webhook verification check:", err?.message || err);
+  }
+}
