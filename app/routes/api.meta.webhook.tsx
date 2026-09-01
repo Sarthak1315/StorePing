@@ -194,78 +194,176 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             let relatedOrderNumber: string | null = null;
             const isInteractiveOrButton = msgType === "INTERACTIVE" || msgType === "BUTTON";
             const lowerText = messageText.trim().toLowerCase();
+            const cleanButtonId = buttonReplyId.trim();
 
             // Extract order number from button reply ID if pattern is confirm_order_1002, update_address_1002, etc.
-            if (buttonReplyId.startsWith("confirm_order_")) {
-              const rawNum = buttonReplyId.replace("confirm_order_", "");
+            if (cleanButtonId.startsWith("confirm_order_")) {
+              const rawNum = decodeURIComponent(cleanButtonId.replace("confirm_order_", ""));
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
-            } else if (buttonReplyId.startsWith("confirm_cod_")) {
-              const rawNum = buttonReplyId.replace("confirm_cod_", "");
+            } else if (cleanButtonId.startsWith("confirm_cod_")) {
+              const rawNum = decodeURIComponent(cleanButtonId.replace("confirm_cod_", ""));
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
-            } else if (buttonReplyId.startsWith("confirm_address_")) {
-              const rawNum = buttonReplyId.replace("confirm_address_", "");
+            } else if (cleanButtonId.startsWith("confirm_address_")) {
+              const rawNum = decodeURIComponent(cleanButtonId.replace("confirm_address_", ""));
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
-            } else if (buttonReplyId.startsWith("update_address_")) {
-              const rawNum = buttonReplyId.replace("update_address_", "");
+            } else if (cleanButtonId.startsWith("update_address_")) {
+              const rawNum = decodeURIComponent(cleanButtonId.replace("update_address_", ""));
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
-            } else if (buttonReplyId.startsWith("support_query_") || buttonReplyId.startsWith("ask_query_")) {
-              const rawNum = buttonReplyId.replace("support_query_", "").replace("ask_query_", "");
+            } else if (cleanButtonId.startsWith("support_query_") || cleanButtonId.startsWith("ask_query_")) {
+              const rawNum = decodeURIComponent(cleanButtonId.replace("support_query_", "").replace("ask_query_", ""));
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
-            } else if (buttonReplyId.startsWith("cancel_cod_") || buttonReplyId.startsWith("cancel_order_")) {
-              const rawNum = buttonReplyId.replace("cancel_cod_", "").replace("cancel_order_", "");
+            } else if (cleanButtonId.startsWith("cancel_cod_") || cleanButtonId.startsWith("cancel_order_")) {
+              const rawNum = decodeURIComponent(cleanButtonId.replace("cancel_cod_", "").replace("cancel_order_", ""));
               relatedOrderNumber = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
             }
 
+            // Strip emojis, punctuation and clean string for intent detection
+            const cleanText = messageText.replace(/[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}]/gu, "").trim().toLowerCase();
+            const cleanBtnId = buttonReplyId.replace(/[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}]/gu, "").trim().toLowerCase();
+
             // Handle Action Detection:
             const isConfirmAction =
-              buttonReplyId.includes("confirm_order") ||
-              buttonReplyId.includes("confirm_cod") ||
-              buttonReplyId.includes("confirm_address") ||
-              lowerText === "confirm address" ||
+              cleanBtnId.includes("confirm_order") ||
+              cleanBtnId.includes("confirm_cod") ||
+              cleanBtnId.includes("confirm_address") ||
+              cleanBtnId.includes("confirm address") ||
+              cleanBtnId.includes("confirm order") ||
+              cleanText.includes("confirm address") ||
+              cleanText.includes("confirm order") ||
+              cleanText.includes("confirm my order") ||
+              cleanText.includes("order confirmed") ||
+              cleanText.includes("verify address") ||
+              cleanText === "confirm" ||
+              cleanText === "yes confirm" ||
+              cleanText === "yes" ||
               lowerText === "✅ confirm address" ||
-              lowerText === "confirm order";
+              lowerText === "✅ confirm cod order";
 
             const isUpdateAddressAction =
-              buttonReplyId.includes("update_address") ||
-              lowerText === "update address" ||
-              lowerText === "update address /" ||
-              lowerText === "✏️ update address" ||
-              lowerText === "✏️ update address /" ||
-              lowerText === "change address";
+              cleanBtnId.includes("update_address") ||
+              cleanBtnId.includes("update_addr") ||
+              cleanBtnId.includes("change_address") ||
+              cleanBtnId.includes("update address") ||
+              cleanBtnId.includes("change address") ||
+              cleanText.includes("update address") ||
+              cleanText.includes("change address") ||
+              cleanText.includes("edit address") ||
+              cleanText.includes("wrong address") ||
+              cleanText.includes("update delivery") ||
+              cleanText.includes("change delivery") ||
+              cleanText.includes("update mobile") ||
+              cleanText.includes("new address") ||
+              cleanText === "update" ||
+              lowerText.includes("update address") ||
+              lowerText.includes("change address");
 
             const isSupportAction =
-              buttonReplyId.includes("support_query") ||
-              buttonReplyId.includes("ask_query") ||
-              lowerText === "ask query" ||
-              lowerText === "💬 ask query" ||
-              lowerText === "need help" ||
-              lowerText === "contact support";
+              cleanBtnId.includes("support_query") ||
+              cleanBtnId.includes("ask_query") ||
+              cleanBtnId.includes("support") ||
+              cleanBtnId.includes("help") ||
+              cleanText.includes("ask query") ||
+              cleanText.includes("need help") ||
+              cleanText.includes("contact support") ||
+              cleanText.includes("talk to agent") ||
+              cleanText.includes("human support") ||
+              cleanText === "query" ||
+              cleanText === "help" ||
+              lowerText.includes("ask query") ||
+              lowerText.includes("need help");
 
             const isCancelAction =
-              buttonReplyId.includes("cancel_cod") ||
-              buttonReplyId.includes("cancel_order") ||
-              lowerText === "cancel order" ||
-              lowerText === "❌ cancel order";
+              cleanBtnId.includes("cancel_cod") ||
+              cleanBtnId.includes("cancel_order") ||
+              cleanBtnId.includes("cancel") ||
+              cleanText.includes("cancel order") ||
+              cleanText.includes("cancel my order") ||
+              cleanText === "cancel" ||
+              lowerText.includes("cancel order");
 
-            // Find matching OrderConfirmation record if explicit order number exists or fallback to most recent active order
-            let matchingOrder = relatedOrderNumber
-              ? await db.orderConfirmation.findFirst({
-                  where: { merchantId: merchant.id, orderNumber: relatedOrderNumber },
-                })
-              : await db.orderConfirmation.findFirst({
+            // Find matching OrderConfirmation record with exhaustive multi-tiered fallback
+            let matchingOrder: any = null;
+
+            if (relatedOrderNumber) {
+              const rawNum = relatedOrderNumber.trim();
+              const withHash = rawNum.startsWith("#") ? rawNum : `#${rawNum}`;
+              const withoutHash = rawNum.replace(/^#/, "");
+
+              // A. Exact match with/without hash
+              matchingOrder = await db.orderConfirmation.findFirst({
+                where: {
+                  merchantId: merchant.id,
+                  OR: [
+                    { orderNumber: rawNum },
+                    { orderNumber: withHash },
+                    { orderNumber: withoutHash },
+                  ],
+                },
+                orderBy: { createdAt: "desc" },
+              });
+
+              // B. Alphanumeric match (handles stripped hyphens e.g. TEST1277 matching #TEST-1277)
+              if (!matchingOrder) {
+                const alphaOnly = rawNum.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+                if (alphaOnly) {
+                  const recentOrders = await db.orderConfirmation.findMany({
+                    where: { merchantId: merchant.id, customerPhone: fromPhone },
+                    orderBy: { createdAt: "desc" },
+                    take: 10,
+                  });
+                  matchingOrder = recentOrders.find(
+                    (o) => o.orderNumber.replace(/[^a-zA-Z0-9]/g, "").toLowerCase() === alphaOnly
+                  ) || null;
+                }
+              }
+            }
+
+            // C. Fallback: Find most relevant order for this customer phone
+            if (!matchingOrder) {
+              // Prioritize actionable orders (PENDING or UPDATE_REQUESTED)
+              matchingOrder = await db.orderConfirmation.findFirst({
+                where: {
+                  merchantId: merchant.id,
+                  customerPhone: fromPhone,
+                  status: { in: ["PENDING", "UPDATE_REQUESTED", "QUERY_REQUESTED"] },
+                },
+                orderBy: { createdAt: "desc" },
+              });
+
+              // If no pending, look for most recent order
+              if (!matchingOrder) {
+                matchingOrder = await db.orderConfirmation.findFirst({
                   where: { merchantId: merchant.id, customerPhone: fromPhone },
                   orderBy: { createdAt: "desc" },
                 });
+              }
+
+              // Also check with last 10 digits for country code variations (e.g. 919328335600 vs 9328335600)
+              if (!matchingOrder && fromPhone.length >= 10) {
+                const shortPhone = fromPhone.slice(-10);
+                matchingOrder = await db.orderConfirmation.findFirst({
+                  where: {
+                    merchantId: merchant.id,
+                    customerPhone: { contains: shortPhone },
+                  },
+                  orderBy: { createdAt: "desc" },
+                });
+              }
+            }
 
             if (matchingOrder && !relatedOrderNumber) {
               relatedOrderNumber = matchingOrder.orderNumber;
             }
 
             // Check if there is an active order specifically waiting for the customer to type their new address
+            const shortPhone = fromPhone.length >= 10 ? fromPhone.slice(-10) : fromPhone;
             const awaitingAddressOrder = await db.orderConfirmation.findFirst({
               where: {
                 merchantId: merchant.id,
-                customerPhone: fromPhone,
+                OR: [
+                  { customerPhone: fromPhone },
+                  { customerPhone: { contains: shortPhone } },
+                ],
                 status: "UPDATE_REQUESTED",
               },
               orderBy: { updatedAt: "desc" },
@@ -380,7 +478,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 bodyText: cancelReplyText,
                 senderRole: "BOT",
               });
-            } else if (awaitingAddressOrder && !isInteractiveOrButton && msgType === "TEXT") {
+            } else if (awaitingAddressOrder && !isInteractiveOrButton && (msgType === "TEXT" || msgType === "text" || !buttonReplyId)) {
               // Customer previously requested an address update and has now replied with their new address text!
               handledSpecificAction = true;
 
@@ -403,7 +501,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               }).catch((err) => console.warn("Shopify order sync note notice:", err));
 
               // 3. Auto-acknowledge receipt and close the update prompt flow
-              const ackText = `✅ *Thank you!*\nWe have received your updated details:\n_"${messageText}"_\n\nOur team has updated this on Order *${awaitingAddressOrder.orderNumber}*. If you have any further questions, feel free to ask! 😊`;
+              const ackText = `✅ *Thank you!*\n\nWe have received your updated details:\n_"${messageText}"_\n\nOur team has updated this on Order *${awaitingAddressOrder.orderNumber}*. If you have any further questions, feel free to ask! 😊`;
               await sendWhatsAppMessage({
                 merchantId: merchant.id,
                 recipientPhone: fromPhone,

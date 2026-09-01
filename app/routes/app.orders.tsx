@@ -400,14 +400,14 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     // Format interactive buttons with order ID
-    const cleanNum = orderNumber.replace(/[^a-zA-Z0-9]/g, "");
+    const safeOrderNum = orderNumber ? encodeURIComponent(orderNumber) : "";
     const formattedButtons = buttons.map((b) => {
       let btnId = b.id;
-      if (btnId === "confirm_order") btnId = `confirm_order_${cleanNum}`;
-      if (btnId === "update_address") btnId = `update_address_${cleanNum}`;
-      if (btnId === "support_query") btnId = `support_query_${cleanNum}`;
-      if (btnId === "confirm_cod") btnId = `confirm_cod_${cleanNum}`;
-      if (btnId === "cancel_cod") btnId = `cancel_cod_${cleanNum}`;
+      if (btnId === "confirm_order" && safeOrderNum) btnId = `confirm_order_${safeOrderNum}`;
+      if (btnId === "update_address" && safeOrderNum) btnId = `update_address_${safeOrderNum}`;
+      if (btnId === "support_query" && safeOrderNum) btnId = `support_query_${safeOrderNum}`;
+      if (btnId === "confirm_cod" && safeOrderNum) btnId = `confirm_cod_${safeOrderNum}`;
+      if (btnId === "cancel_cod" && safeOrderNum) btnId = `cancel_cod_${safeOrderNum}`;
       return { ...b, id: btnId };
     });
 

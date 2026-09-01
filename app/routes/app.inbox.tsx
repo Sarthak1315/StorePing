@@ -246,12 +246,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const interpolatedBody = interpolateVariables(template.bodyText, templateVariables);
     const interpolatedHeader = interpolateVariables(template.headerText, templateVariables);
     const buttons = (template.buttons as any[]) || [];
-    const cleanNum = orderNumber.replace(/[^a-zA-Z0-9]/g, "") || "1001";
+    const safeOrderNum = orderNumber ? encodeURIComponent(orderNumber) : "1001";
     const formattedButtons = buttons.map((b) => {
       let btnId = b.id;
-      if (btnId === "confirm_order") btnId = `confirm_order_${cleanNum}`;
-      if (btnId === "update_address") btnId = `update_address_${cleanNum}`;
-      if (btnId === "support_query") btnId = `support_query_${cleanNum}`;
+      if (btnId === "confirm_order") btnId = `confirm_order_${safeOrderNum}`;
+      if (btnId === "update_address") btnId = `update_address_${safeOrderNum}`;
+      if (btnId === "support_query") btnId = `support_query_${safeOrderNum}`;
       return { ...b, id: btnId };
     });
 

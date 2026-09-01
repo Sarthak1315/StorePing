@@ -110,7 +110,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // 5. Test Order Automation Simulation
   if (intent === "testOrderAutomation") {
-    const testPhone = (formData.get("testPhone") as string)?.trim() || merchant.connectedPhoneNumber || "";
+    const testPhone = (formData.get("testPhone") as string)?.trim() || merchant.displayPhoneNumber || merchant.phone || "";
     const cleanPhone = normalizePhoneNumber(testPhone);
 
     if (!cleanPhone) {
@@ -289,7 +289,7 @@ export default function AutomationsPage() {
   const [reEngagement, setReEngagement] = useState(merchant?.reEngagementEnabled ?? true);
   const [supportChat, setSupportChat] = useState(merchant?.supportChatEnabled ?? true);
   const [codVerification, setCodVerification] = useState(merchant?.codVerificationEnabled ?? true);
-  const [testPhone, setTestPhone] = useState(merchant?.connectedPhoneNumber || "");
+  const [testPhone, setTestPhone] = useState(merchant?.displayPhoneNumber || merchant?.phone || "");
 
   const isSubmitting = fetcher.state !== "idle";
 

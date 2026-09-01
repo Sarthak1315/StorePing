@@ -229,11 +229,12 @@ export async function processPendingJobs(limit = 20) {
     const rawButtons = (template.buttons as any[]) || [];
     const formattedButtons = rawButtons.map((b) => {
       let btnId = b.id;
-      if (btnId === "confirm_order" && orderNumber) btnId = `confirm_order_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
-      if (btnId === "update_address" && orderNumber) btnId = `update_address_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
-      if (btnId === "support_query" && orderNumber) btnId = `support_query_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
-      if (btnId === "confirm_cod" && orderNumber) btnId = `confirm_cod_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
-      if (btnId === "cancel_cod" && orderNumber) btnId = `cancel_cod_${orderNumber.replace(/[^a-zA-Z0-9]/g, "")}`;
+      const safeOrderNum = orderNumber ? encodeURIComponent(orderNumber) : "";
+      if (btnId === "confirm_order" && safeOrderNum) btnId = `confirm_order_${safeOrderNum}`;
+      if (btnId === "update_address" && safeOrderNum) btnId = `update_address_${safeOrderNum}`;
+      if (btnId === "support_query" && safeOrderNum) btnId = `support_query_${safeOrderNum}`;
+      if (btnId === "confirm_cod" && safeOrderNum) btnId = `confirm_cod_${safeOrderNum}`;
+      if (btnId === "cancel_cod" && safeOrderNum) btnId = `cancel_cod_${safeOrderNum}`;
 
       return {
         ...b,

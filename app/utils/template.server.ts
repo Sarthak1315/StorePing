@@ -18,7 +18,7 @@ export const DEFAULT_TEMPLATES = [
     buttonUrl: "",
     buttons: [
       { id: "confirm_order", text: "✅ Confirm Address", type: "QUICK_REPLY" },
-      { id: "update_address", text: "✏️ Update Address / Mobile", type: "QUICK_REPLY" },
+      { id: "update_address", text: "✏️ Update Address", type: "QUICK_REPLY" },
       { id: "support_query", text: "💬 Ask Query", type: "QUICK_REPLY" },
     ],
     isActive: true,
