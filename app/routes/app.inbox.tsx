@@ -37,6 +37,12 @@ import db from "../db.server";
 import { sendWhatsAppMessage, subscribeWabaToWebhooks } from "../utils/meta-whatsapp.server";
 import { logInfo, logError } from "../utils/logger.server";
 import { interpolateVariables } from "../utils/template.shared";
+import {
+  formatWhatsAppText,
+  insertFormattingIntoText,
+  COMMON_WHATSAPP_EMOJIS,
+  type WhatsAppFormatType,
+} from "../utils/whatsapp-formatter";
 
 export type ChatMessageType = {
   id: string;
@@ -396,6 +402,30 @@ export default function LiveInboxPage() {
   const [replyMediaUrl, setReplyMediaUrl] = useState<string>("");
   const [showMediaInput, setShowMediaInput] = useState<boolean>(false);
   const [mediaType, setMediaType] = useState<"IMAGE" | "VIDEO" | "DOCUMENT">("IMAGE");
+  const [showEmojiPicker, setShowEmojiPicker] = useState<boolean>(false);
+  const [newChatEmojiPicker, setNewChatEmojiPicker] = useState<boolean>(false);
+
+  const handleApplyReplyFormat = (formatType: WhatsAppFormatType, customValue?: string) => {
+    const { newText } = insertFormattingIntoText(
+      replyText,
+      replyText.length,
+      replyText.length,
+      formatType,
+      customValue
+    );
+    setReplyText(newText);
+  };
+
+  const handleApplyNewChatFormat = (formatType: WhatsAppFormatType, customValue?: string) => {
+    const { newText } = insertFormattingIntoText(
+      newInitialMessage,
+      newInitialMessage.length,
+      newInitialMessage.length,
+      formatType,
+      customValue
+    );
+    setNewInitialMessage(newText);
+  };
 
   // "Start New Chat" Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -1036,13 +1066,13 @@ export default function LiveInboxPage() {
                           <div
                             style={{
                               fontSize: "13px",
-                              lineHeight: "1.4",
+                              lineHeight: "1.45",
                               color: "#1e293b",
                               whiteSpace: "pre-wrap",
                               wordBreak: "break-word",
                             }}
                           >
-                            {msg.bodyText}
+                            {formatWhatsAppText(msg.bodyText, { isPortal: false })}
                           </div>
                         )}
 
@@ -1158,16 +1188,74 @@ export default function LiveInboxPage() {
                       </Box>
                     )}
 
+                    {/* WhatsApp Rich Formatting Toolbar for Polaris */}
+                    <InlineStack gap="100" blockAlign="center" align="space-between" wrap>
+                      <InlineStack gap="100" blockAlign="center">
+                        <Button size="micro" onClick={() => handleApplyReplyFormat("bold")}>
+                          *B* Bold
+                        </Button>
+                        <Button size="micro" onClick={() => handleApplyReplyFormat("italic")}>
+                          _I_ Italic
+                        </Button>
+                        <Button size="micro" onClick={() => handleApplyReplyFormat("strike")}>
+                          ~S~ Strike
+                        </Button>
+                        <Button size="micro" onClick={() => handleApplyReplyFormat("code")}>
+                          &lt;/&gt; Code
+                        </Button>
+                        <Button
+                          size="micro"
+                          onClick={() => {
+                            const url = window.prompt("Enter Website URL (e.g. https://yourstore.com):", "https://");
+                            if (url) handleApplyReplyFormat("link", url);
+                          }}
+                        >
+                          🔗 Link
+                        </Button>
+                        <Button size="micro" onClick={() => handleApplyReplyFormat("newline")}>
+                          ↵ Line Break
+                        </Button>
+                        <Button
+                          size="micro"
+                          pressed={showEmojiPicker}
+                          onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                        >
+                          😊 Emojis
+                        </Button>
+                      </InlineStack>
+                      <Text as="span" variant="bodyXs" tone="subdued">
+                        Supports *bold*, _italic_, ~strike~, `code`, & Enter (newline)
+                      </Text>
+                    </InlineStack>
+
+                    {/* Emoji Quick Access Pills */}
+                    {showEmojiPicker && (
+                      <Box padding="200" background="bg-surface-secondary" borderRadius="200">
+                        <InlineStack gap="150" wrap>
+                          <Text as="span" variant="bodyXs" tone="subdued">Quick Emojis:</Text>
+                          {COMMON_WHATSAPP_EMOJIS.map((emoji) => (
+                            <div
+                              key={emoji}
+                              onClick={() => handleApplyReplyFormat("emoji", emoji)}
+                              style={{ cursor: "pointer", fontSize: "16px", padding: "2px 4px" }}
+                            >
+                              {emoji}
+                            </div>
+                          ))}
+                        </InlineStack>
+                      </Box>
+                    )}
+
                     {/* Text Reply Input */}
                     <div style={{ display: "flex", gap: "10px", alignItems: "flex-end" }}>
                       <div style={{ flex: 1 }}>
                         <TextField
                           label="Type WhatsApp Reply"
                           labelHidden
-                          placeholder={replyMediaUrl ? "Add an optional caption for this image/file..." : "Type your WhatsApp reply to this customer..."}
+                          placeholder={replyMediaUrl ? "Add an optional caption for this image/file..." : "Type your WhatsApp reply (supports *bold*, _italic_, ~strike~, links, and Enter for new lines)..."}
                           value={replyText}
                           onChange={setReplyText}
-                          multiline={2}
+                          multiline={3}
                           autoComplete="off"
                         />
                       </div>
@@ -1284,13 +1372,68 @@ export default function LiveInboxPage() {
               onChange={setNewOrderNumber}
               autoComplete="off"
             />
-            <TextField
-              label="Initial Message Body"
-              value={newInitialMessage}
-              onChange={setNewInitialMessage}
-              multiline={3}
-              autoComplete="off"
-            />
+            <BlockStack gap="200">
+              <InlineStack gap="100" blockAlign="center" align="space-between" wrap>
+                <InlineStack gap="100" blockAlign="center">
+                  <Button size="micro" onClick={() => handleApplyNewChatFormat("bold")}>
+                    *B* Bold
+                  </Button>
+                  <Button size="micro" onClick={() => handleApplyNewChatFormat("italic")}>
+                    _I_ Italic
+                  </Button>
+                  <Button size="micro" onClick={() => handleApplyNewChatFormat("strike")}>
+                    ~S~ Strike
+                  </Button>
+                  <Button size="micro" onClick={() => handleApplyNewChatFormat("code")}>
+                    &lt;/&gt; Code
+                  </Button>
+                  <Button
+                    size="micro"
+                    onClick={() => {
+                      const url = window.prompt("Enter Website URL (e.g. https://yourstore.com):", "https://");
+                      if (url) handleApplyNewChatFormat("link", url);
+                    }}
+                  >
+                    🔗 Link
+                  </Button>
+                  <Button size="micro" onClick={() => handleApplyNewChatFormat("newline")}>
+                    ↵ Line Break
+                  </Button>
+                  <Button
+                    size="micro"
+                    pressed={newChatEmojiPicker}
+                    onClick={() => setNewChatEmojiPicker(!newChatEmojiPicker)}
+                  >
+                    😊 Emojis
+                  </Button>
+                </InlineStack>
+              </InlineStack>
+
+              {newChatEmojiPicker && (
+                <Box padding="200" background="bg-surface-secondary" borderRadius="200">
+                  <InlineStack gap="150" wrap>
+                    {COMMON_WHATSAPP_EMOJIS.map((emoji) => (
+                      <div
+                        key={emoji}
+                        onClick={() => handleApplyNewChatFormat("emoji", emoji)}
+                        style={{ cursor: "pointer", fontSize: "16px", padding: "2px 4px" }}
+                      >
+                        {emoji}
+                      </div>
+                    ))}
+                  </InlineStack>
+                </Box>
+              )}
+
+              <TextField
+                label="Initial Message Body"
+                value={newInitialMessage}
+                onChange={setNewInitialMessage}
+                multiline={4}
+                autoComplete="off"
+                helpText="Supports WhatsApp formatting: *bold*, _italic_, ~strike~, `code`, and newlines."
+              />
+            </BlockStack>
           </FormLayout>
         </Modal.Section>
       </Modal>

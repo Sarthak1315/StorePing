@@ -23,6 +23,7 @@ import { seedDefaultTemplates } from "../utils/template.server";
 import { interpolateVariables } from "../utils/template.shared";
 import { logInfo, logError } from "../utils/logger.server";
 import { syncTemplateToMeta, sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
+import { formatWhatsAppText } from "../utils/whatsapp-formatter";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -724,7 +725,7 @@ export default function TemplatesAndSimulatorPage() {
                             wordBreak: "break-word",
                           }}
                         >
-                          {simulatedBody || "Your message body will appear here..."}
+                          {simulatedBody ? formatWhatsAppText(simulatedBody) : "Your message body will appear here..."}
                         </div>
 
                         {/* Message Footer */}

@@ -1,10 +1,16 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { Form, Link, useActionData, useLoaderData, useNavigation, useSearchParams } from "@remix-run/react";
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import db from "../db.server";
 import { requirePortalUser } from "../utils/portal-auth.server";
 import { sendWhatsAppMessage, uploadMediaToMeta } from "../utils/meta-whatsapp.server";
+import {
+  formatWhatsAppText,
+  insertFormattingIntoText,
+  COMMON_WHATSAPP_EMOJIS,
+  type WhatsAppFormatType,
+} from "../utils/whatsapp-formatter";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const user = await requirePortalUser(request);
@@ -219,10 +225,58 @@ export default function PortalInbox() {
   const [searchQuery, setSearchQuery] = useState("");
   const [supportFilter, setSupportFilter] = useState<"ALL" | "NEEDS_REPLY" | "ORDERS" | "RESOLVED">("ALL");
   const [showAttachModal, setShowAttachModal] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [attachUrl, setAttachUrl] = useState("");
   const [attachType, setAttachType] = useState<"DOCUMENT" | "IMAGE">("DOCUMENT");
   const [attachFileName, setAttachFileName] = useState("Invoice.pdf");
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // Auto-resize textarea height as content changes
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(Math.max(textareaRef.current.scrollHeight, 38), 140)}px`;
+    }
+  }, [messageInput]);
+
+  const handleApplyFormat = (formatType: WhatsAppFormatType, customValue?: string) => {
+    const el = textareaRef.current;
+    const start = el ? el.selectionStart : messageInput.length;
+    const end = el ? el.selectionEnd : messageInput.length;
+
+    const { newText, newCursorPos, newSelectionEnd } = insertFormattingIntoText(
+      messageInput,
+      start,
+      end,
+      formatType,
+      customValue
+    );
+
+    setMessageInput(newText);
+    setTimeout(() => {
+      if (el) {
+        el.focus();
+        el.setSelectionRange(newCursorPos, newSelectionEnd);
+      }
+    }, 0);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if ((messageInput.trim() || attachUrl) && formRef.current) {
+        formRef.current.requestSubmit();
+      }
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      if ((messageInput.trim() || attachUrl) && formRef.current) {
+        formRef.current.requestSubmit();
+      }
+    }
+  };
 
   const needsReplyCount = conversations.filter((c: any) => c.status === "NEEDS_REPLY" || c.unreadCount > 0).length;
   const ordersCount = conversations.filter((c: any) => !!c.lastOrderNumber).length;
@@ -467,7 +521,7 @@ export default function PortalInbox() {
                 No message history yet. Type a message below to start chatting.
               </div>
             ) : (
-              activeConversation.messages.map((msg) => {
+              activeConversation.messages.map((msg: any) => {
                 const isMerchant = msg.sender === "MERCHANT";
                 const isDoc = msg.messageType === "DOCUMENT" || (msg.caption && msg.caption.endsWith(".pdf"));
                 const isImage = msg.messageType === "IMAGE";
@@ -532,7 +586,9 @@ export default function PortalInbox() {
                         msg.bodyText !== "📷 Image" &&
                         msg.bodyText !== "WhatsApp Notification" &&
                         !msg.bodyText.startsWith("📄 ") && (
-                          <p className="leading-relaxed whitespace-pre-wrap text-[12.5px]">{msg.bodyText}</p>
+                          <div className="leading-relaxed text-[12.5px] break-words whitespace-pre-wrap">
+                            {formatWhatsAppText(msg.bodyText, { isPortal: true })}
+                          </div>
                         )}
 
                       {/* Message Meta Info */}
@@ -571,7 +627,7 @@ export default function PortalInbox() {
             <span className="text-[10px] text-[#8696a0] font-semibold uppercase tracking-wider shrink-0">
               Templates:
             </span>
-            {templates.map((tpl) => (
+            {templates.map((tpl: any) => (
               <button
                 key={tpl.id}
                 type="button"
@@ -583,14 +639,101 @@ export default function PortalInbox() {
             ))}
           </div>
 
+          {/* WhatsApp Rich Formatting Toolbar */}
+          <div className="flex items-center justify-between px-3 py-1.5 bg-[#182229] border-t border-[#2a3942] text-xs shrink-0 select-none">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => handleApplyFormat("bold")}
+                className="px-2 py-0.5 rounded hover:bg-[#2a3942] text-[#e9edef] font-bold text-xs transition"
+                title="Bold (*text*)"
+              >
+                B
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyFormat("italic")}
+                className="px-2 py-0.5 rounded hover:bg-[#2a3942] text-[#e9edef] italic text-xs transition font-serif"
+                title="Italic (_text_)"
+              >
+                I
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyFormat("strike")}
+                className="px-2 py-0.5 rounded hover:bg-[#2a3942] text-[#e9edef] line-through text-xs transition"
+                title="Strikethrough (~text~)"
+              >
+                S
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyFormat("code")}
+                className="px-2 py-0.5 rounded hover:bg-[#2a3942] text-[#00a884] font-mono text-xs transition"
+                title="Monospace (`code`)"
+              >
+                &lt;/&gt;
+              </button>
+              <span className="w-px h-3.5 bg-[#2a3942] mx-1"></span>
+              <button
+                type="button"
+                onClick={() => {
+                  const url = window.prompt("Enter Website URL (e.g. https://yourstore.com):", "https://");
+                  if (url) handleApplyFormat("link", url);
+                }}
+                className="px-2 py-0.5 rounded hover:bg-[#2a3942] text-[#8696a0] hover:text-[#53bdeb] text-xs transition flex items-center gap-1"
+                title="Insert Link"
+              >
+                🔗 Link
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyFormat("newline")}
+                className="px-2 py-0.5 rounded hover:bg-[#2a3942] text-[#8696a0] hover:text-[#00a884] text-xs transition"
+                title="Insert Line / Paragraph Break"
+              >
+                ↵ Line Break
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                className={`px-2 py-0.5 rounded text-xs transition ${showEmojiPicker ? "bg-[#00a884] text-slate-950 font-bold" : "hover:bg-[#2a3942] text-[#8696a0] hover:text-[#e9edef]"}`}
+                title="Quick Emojis"
+              >
+                😊 Emojis
+              </button>
+            </div>
+            <div className="text-[10px] text-[#8696a0] hidden sm:block">
+              ↵ Enter to send • Shift+Enter for new line
+            </div>
+          </div>
+
+          {/* Quick Emoji Bar when toggled */}
+          {showEmojiPicker && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#111b21] border-t border-[#2a3942] overflow-x-auto shrink-0 select-none">
+              <span className="text-[10px] text-[#8696a0] mr-1 shrink-0">Quick Emojis:</span>
+              {COMMON_WHATSAPP_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => handleApplyFormat("emoji", emoji)}
+                  className="p-1 hover:bg-[#2a3942] rounded text-sm transition shrink-0"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Input Bar */}
           <div className="p-3 border-t border-[#222d34] bg-[#202c33] shrink-0">
             <Form
+              ref={formRef}
               method="post"
               onSubmit={() => {
                 setTimeout(() => setMessageInput(""), 100);
               }}
-              className="flex items-center gap-2"
+              className="flex items-end gap-2"
             >
               <input type="hidden" name="intent" value="send_message" />
               <input type="hidden" name="customerPhone" value={activeConversation.customerPhone} />
@@ -599,26 +742,35 @@ export default function PortalInbox() {
               <button
                 type="button"
                 onClick={() => setShowAttachModal(!showAttachModal)}
-                className="p-2 rounded-lg bg-[#2a3942] hover:bg-[#324552] text-[#8696a0] hover:text-white text-sm transition"
+                className="p-2.5 rounded-lg bg-[#2a3942] hover:bg-[#324552] text-[#8696a0] hover:text-white text-sm transition shrink-0 self-end mb-0.5"
                 title="Attach PDF or Image"
               >
                 📎
               </button>
 
-              <input
-                type="text"
-                name="messageText"
-                value={messageInput}
-                onChange={(e) => setMessageInput(e.target.value)}
-                placeholder="Type your WhatsApp message..."
-                required={!attachUrl}
-                className="flex-1 px-3.5 py-2.5 bg-[#2a3942] border border-transparent rounded-lg text-xs text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884]"
-              />
+              <div className="flex-1 relative">
+                <textarea
+                  ref={textareaRef}
+                  name="messageText"
+                  value={messageInput}
+                  onChange={(e) => setMessageInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type your WhatsApp message (supports *bold*, _italic_, ~strike~, links, and Enter for new lines)..."
+                  required={!attachUrl}
+                  rows={1}
+                  style={{
+                    minHeight: "38px",
+                    maxHeight: "140px",
+                    resize: "none",
+                  }}
+                  className="w-full px-3.5 py-2 bg-[#2a3942] border border-transparent rounded-lg text-xs text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] leading-relaxed scrollbar-thin"
+                />
+              </div>
 
               <button
                 type="submit"
-                disabled={isSending}
-                className="px-4 py-2.5 bg-[#00a884] hover:bg-[#02906f] text-slate-950 font-bold rounded-lg text-xs transition shadow-sm disabled:opacity-50 flex items-center gap-1.5"
+                disabled={isSending || (!messageInput.trim() && !attachUrl)}
+                className="px-4 py-2.5 bg-[#00a884] hover:bg-[#02906f] text-slate-950 font-bold rounded-lg text-xs transition shadow-sm disabled:opacity-50 flex items-center gap-1.5 shrink-0 self-end mb-0.5"
               >
                 <span>{isSending ? "Sending..." : "Send"}</span>
                 <span>➤</span>
@@ -704,13 +856,13 @@ export default function PortalInbox() {
                 {/* Optional Caption / Message */}
                 <div>
                   <label className="block text-[10px] font-semibold text-[#8696a0] mb-1">
-                    Caption or Note (Optional)
+                    Caption or Note (Supports *bold*, _italic_, enters)
                   </label>
-                  <input
-                    type="text"
+                  <textarea
                     name="messageText"
-                    placeholder="e.g. Here is your official invoice copy..."
-                    className="w-full px-3 py-2 bg-[#202c33] border border-[#2a3942] rounded-lg text-xs text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884]"
+                    rows={2}
+                    placeholder="e.g. Here is your official invoice copy...&#10;&#10;Regards,&#10;Team Support"
+                    className="w-full px-3 py-2 bg-[#202c33] border border-[#2a3942] rounded-lg text-xs text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] resize-none"
                   />
                 </div>
 

@@ -634,7 +634,8 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     };
   } else {
     // Non-template Freeform text message: Combine bold header and italic footer if present
-    let formattedText = (bodyText || "Hello from StorePing!").trim();
+    const cleanBody = bodyText ? bodyText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim() : "Hello from StorePing!";
+    let formattedText = cleanBody;
 
     if (headerType === "TEXT" && headerText && headerText.trim()) {
       formattedText = `*${headerText.trim()}*\n\n${formattedText}`;
