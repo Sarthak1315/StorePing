@@ -297,6 +297,34 @@ export default function PortalInbox() {
 
   return (
     <div className="flex-1 flex flex-col md:flex-row h-full w-full overflow-hidden bg-[#0c1317]">
+      <style>{`
+        * {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(134, 150, 160, 0.25) transparent;
+        }
+        ::-webkit-scrollbar {
+          width: 5px;
+          height: 5px;
+        }
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+          background-color: rgba(134, 150, 160, 0.25);
+          border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+          background-color: rgba(0, 168, 132, 0.5);
+        }
+        ::-webkit-scrollbar-corner {
+          background: transparent;
+        }
+        ::-webkit-scrollbar-button {
+          display: none !important;
+          width: 0 !important;
+          height: 0 !important;
+        }
+      `}</style>
       {/* 1. Left Conversation Directory Pane */}
       <div className="w-full md:w-80 lg:w-88 border-r border-[#222d34] bg-[#111b21] flex flex-col shrink-0 h-full">
         {/* Search & Header */}

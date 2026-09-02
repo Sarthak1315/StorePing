@@ -50,6 +50,34 @@ export default function App() {
                 min-height: 100vh;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
                 -webkit-font-smoothing: antialiased;
+                scrollbar-width: thin;
+                scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+              }
+              * {
+                scrollbar-width: thin;
+                scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+              }
+              ::-webkit-scrollbar {
+                width: 6px;
+                height: 6px;
+              }
+              ::-webkit-scrollbar-track {
+                background: transparent;
+              }
+              ::-webkit-scrollbar-thumb {
+                background-color: rgba(148, 163, 184, 0.25);
+                border-radius: 9999px;
+              }
+              ::-webkit-scrollbar-thumb:hover {
+                background-color: rgba(148, 163, 184, 0.45);
+              }
+              ::-webkit-scrollbar-corner {
+                background: transparent;
+              }
+              ::-webkit-scrollbar-button {
+                display: none !important;
+                width: 0 !important;
+                height: 0 !important;
               }
               #loading-bar {
                 position: fixed;

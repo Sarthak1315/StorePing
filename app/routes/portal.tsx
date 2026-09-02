@@ -38,6 +38,34 @@ export default function PortalLayout() {
   if (location.pathname.startsWith("/portal/admin")) {
     return (
       <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans relative selection:bg-emerald-500 selection:text-white">
+        <style>{`
+          * {
+            scrollbar-width: thin;
+            scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+          }
+          ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+          }
+          ::-webkit-scrollbar-track {
+            background: transparent;
+          }
+          ::-webkit-scrollbar-thumb {
+            background-color: rgba(148, 163, 184, 0.25);
+            border-radius: 9999px;
+          }
+          ::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(0, 168, 132, 0.5);
+          }
+          ::-webkit-scrollbar-corner {
+            background: transparent;
+          }
+          ::-webkit-scrollbar-button {
+            display: none !important;
+            width: 0 !important;
+            height: 0 !important;
+          }
+        `}</style>
         {isNavigating && (
           <div className="fixed top-0 left-0 right-0 z-50 h-[2px] bg-emerald-500 transition-all duration-200 pointer-events-none" />
         )}
@@ -103,6 +131,34 @@ export default function PortalLayout() {
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col md:flex-row font-sans selection:bg-emerald-500 selection:text-white relative">
+      <style>{`
+        * {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+        }
+        ::-webkit-scrollbar {
+          width: 6px;
+          height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+          background-color: rgba(148, 163, 184, 0.25);
+          border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+          background-color: rgba(0, 168, 132, 0.5);
+        }
+        ::-webkit-scrollbar-corner {
+          background: transparent;
+        }
+        ::-webkit-scrollbar-button {
+          display: none !important;
+          width: 0 !important;
+          height: 0 !important;
+        }
+      `}</style>
       {/* Simple, clean, ultra-thin top progress line on route navigation */}
       {isNavigating && (
         <div className="fixed top-0 left-0 right-0 z-50 h-[2px] bg-emerald-500 transition-all duration-200 pointer-events-none" />
