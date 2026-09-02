@@ -92,7 +92,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       },
     }),
     db.metaApiLog.findMany({
-      take: 500,
+      take: 2500,
       orderBy: { createdAt: "desc" },
       include: {
         merchant: {
@@ -125,7 +125,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     getPlatformSettings(),
     getGlobalPlatformBillingSummary(),
     db.shopifyApiLog.findMany({
-      take: 500,
+      take: 2500,
       orderBy: { createdAt: "desc" },
       include: {
         merchant: {
@@ -503,10 +503,22 @@ export default function SuperAdminDashboard() {
     return matchesSearch && matchesPlan;
   });
 
-  // Filtered Meta API Logs
+  // Filtered Meta API Logs:
+  // Default: Only display last 24 hours of records
+  // Search: Searches full database history across all dates
+  const isMetaSearchActive = apiSearch.trim().length > 0;
   const filteredApiLogs = apiLogs.filter((log) => {
-    const query = apiSearch.toLowerCase();
+    const query = apiSearch.toLowerCase().trim();
+
+    // When not searching, restrict strictly to the last 24 hours
+    if (!isMetaSearchActive) {
+      const logTime = new Date(log.createdAt).getTime();
+      const isWithin24h = logTime >= Date.now() - 24 * 60 * 60 * 1000;
+      if (!isWithin24h) return false;
+    }
+
     const matchesSearch =
+      !isMetaSearchActive ||
       log.endpoint.toLowerCase().includes(query) ||
       (log.initiatedBy && log.initiatedBy.toLowerCase().includes(query)) ||
       (log.merchant?.shop && log.merchant.shop.toLowerCase().includes(query)) ||
@@ -685,10 +697,22 @@ export default function SuperAdminDashboard() {
     }))
     .sort((a, b) => b.totalCalls - a.totalCalls);
 
-  // Filtered Shopify API & Webhook Logs
+  // Filtered Shopify API & Webhook Logs:
+  // Default: Only display last 24 hours of records
+  // Search: Searches full database history across all dates
+  const isShopifySearchActive = apiSearch.trim().length > 0;
   const filteredShopifyLogs = shopifyLogs.filter((log) => {
-    const query = apiSearch.toLowerCase();
+    const query = apiSearch.toLowerCase().trim();
+
+    // When not searching, restrict strictly to the last 24 hours
+    if (!isShopifySearchActive) {
+      const logTime = new Date(log.createdAt).getTime();
+      const isWithin24h = logTime >= Date.now() - 24 * 60 * 60 * 1000;
+      if (!isWithin24h) return false;
+    }
+
     const matchesSearch =
+      !isShopifySearchActive ||
       log.topic.toLowerCase().includes(query) ||
       (log.initiatedBy && log.initiatedBy.toLowerCase().includes(query)) ||
       (log.shop && log.shop.toLowerCase().includes(query)) ||
@@ -899,14 +923,14 @@ export default function SuperAdminDashboard() {
       id: "META_LOGS" as const,
       label: "Meta Logs & Webhooks",
       icon: "🟢",
-      badge: `${apiStats.totalApiCalls}`,
+      badge: `${apiStats.apiCalls24h}`,
       badgeColor: "bg-slate-800 text-emerald-400",
     },
     {
       id: "SHOPIFY_LOGS" as const,
       label: "Shopify Logs & Webhooks",
       icon: "🛍️",
-      badge: `${shopifyStats.totalShopifyLogs}`,
+      badge: `${shopifyStats.shopifyLogs24h}`,
       badgeColor: "bg-slate-800 text-purple-400",
     },
     {
@@ -1617,7 +1641,9 @@ export default function SuperAdminDashboard() {
                     }`}
                   >
                     <span>🟢</span>
-                    <span>Meta WhatsApp Cloud API ({apiLogs.length})</span>
+                    <span>
+                      Meta WhatsApp Cloud API ({apiSearch.trim() ? `${filteredApiLogs.length} found` : `${apiStats.apiCalls24h} (24h)`})
+                    </span>
                   </button>
 
                   <button
@@ -1635,7 +1661,9 @@ export default function SuperAdminDashboard() {
                     }`}
                   >
                     <span>🛍️</span>
-                    <span>Shopify Webhooks & GraphQL ({shopifyLogs.length})</span>
+                    <span>
+                      Shopify Webhooks & GraphQL ({apiSearch.trim() ? `${filteredShopifyLogs.length} found` : `${shopifyStats.shopifyLogs24h} (24h)`})
+                    </span>
                   </button>
                 </div>
 
@@ -1933,6 +1961,30 @@ export default function SuperAdminDashboard() {
                     Clear ✕
                   </button>
                 )}
+              </div>
+
+              {/* 24-Hour vs Full Table Search Context Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-[11px]">
+                <div className="flex items-center gap-1.5">
+                  {apiSearch.trim() ? (
+                    <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                      <span>🌐</span>
+                      <span>
+                        Full Table Search Active: {logPlatform === "META" ? filteredApiLogs.length : filteredShopifyLogs.length} matching records found across all time
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 flex items-center gap-1">
+                      <span>🕒</span>
+                      <span>
+                        Displaying last 24 hours of records only. Type in the search box to search the entire database table.
+                      </span>
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  Database Total: {logPlatform === "META" ? apiStats.totalApiCalls : shopifyStats.totalShopifyLogs} records
+                </div>
               </div>
 
               {/* ========================================================================= */}
