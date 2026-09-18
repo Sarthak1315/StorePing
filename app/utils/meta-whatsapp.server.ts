@@ -121,27 +121,45 @@ export async function subscribeWabaToWebhooks(merchantId: string) {
 }
 
 /**
+ * Strips emojis, formatting characters (*, _, ~, `, #), and newlines as strictly required by Meta for headers and buttons.
+ */
+export function stripEmojisAndFormatting(rawText: string | null | undefined): string {
+  if (!rawText) return "";
+  return rawText
+    .replace(/[\u{1F600}-\u{1F6FF}|\u{1F300}-\u{1F5FF}|\u{1F680}-\u{1F6FF}|\u{1F1E0}-\u{1F1FF}|\u{2600}-\u{26FF}|\u{2700}-\u{27BF}|\u{FE00}-\u{FE0F}|\u{1F900}-\u{1F9FF}|\u{1F018}-\u{1F0F5}|\u{1F200}-\u{1F2FF}]/gu, "")
+    .replace(/[*_~`#]/g, "")
+    .replace(/\r?\n|\r/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Converts template text with named variables {{customer_name}} to Meta positional variables {{1}}, {{2}}
  * and generates sample values required by Meta for instant approval.
  */
-export function convertToMetaTemplateFormat(rawText: string) {
-  const variableMatches = rawText.match(/\{\{([a-zA-Z0-9_]+)\}\}/g) || [];
-  let metaText = rawText;
+export function convertToMetaTemplateFormat(rawText: string, isHeader = false) {
+  let cleanInput = isHeader ? stripEmojisAndFormatting(rawText).slice(0, 60) : rawText;
+  const variableMatches = cleanInput.match(/\{\{([a-zA-Z0-9_]+)\}\}/g) || [];
+  let metaText = cleanInput;
   const exampleValues: string[] = [];
 
   const sampleMap: Record<string, string> = {
     customer_name: "Rahul Sharma",
     order_id: "1024",
-    order_name: "#1024",
+    order_name: "1024",
     order_number: "1024",
-    store_name: "Everon Lab",
+    store_name: "StorePing Shop",
     total_amount: "2499",
     total_price: "2499",
     currency: "INR",
+    cart_items: "Silk Sherwani (x1)",
+    items: "Silk Sherwani (x1)",
+    shipping_address: "Flat 402, Mumbai, MH, 400001",
+    customer_phone: "919876543210",
     tracking_number: "IN9823471029",
     carrier: "Shiprocket",
     tracking_url: "https://track.shiprocket.in",
-    checkout_url: "https://satjewells-2.myshopify.com",
+    checkout_url: "https://myshopify.com/checkout",
     discount_code: "SAVE10",
   };
 
@@ -169,6 +187,7 @@ export async function syncTemplateToMeta(merchantId: string, template: {
   buttonType?: string | null;
   buttonText?: string | null;
   buttonUrl?: string | null;
+  buttons?: Array<{ id?: string; text?: string; title?: string; type?: string; url?: string }>;
 }) {
   const merchant = await db.merchant.findUnique({ where: { id: merchantId } });
   if (!merchant || !merchant.wabaId || !merchant.waAccessToken) {
@@ -180,22 +199,26 @@ export async function syncTemplateToMeta(merchantId: string, template: {
 
   const components: any[] = [];
 
+  // 1. Header (Cleaned of emojis, markdown, and newlines as mandated by Meta)
   if (template.headerType === "TEXT" && template.headerText) {
     const { metaText: headerMetaText, exampleValues: headerExamples, count: headerCount } =
-      convertToMetaTemplateFormat(template.headerText);
-    const headerComponent: any = {
-      type: "HEADER",
-      format: "TEXT",
-      text: headerMetaText,
-    };
-    if (headerCount > 0) {
-      headerComponent.example = { header_text: headerExamples };
+      convertToMetaTemplateFormat(template.headerText, true);
+    if (headerMetaText) {
+      const headerComponent: any = {
+        type: "HEADER",
+        format: "TEXT",
+        text: headerMetaText,
+      };
+      if (headerCount > 0) {
+        headerComponent.example = { header_text: headerExamples };
+      }
+      components.push(headerComponent);
     }
-    components.push(headerComponent);
   }
 
+  // 2. Body (Emojis & markdown are fully supported by Meta in BODY)
   const { metaText: bodyMetaText, exampleValues: bodyExamples, count: bodyCount } =
-    convertToMetaTemplateFormat(template.bodyText);
+    convertToMetaTemplateFormat(template.bodyText, false);
   const bodyComponent: any = {
     type: "BODY",
     text: bodyMetaText,
@@ -207,27 +230,35 @@ export async function syncTemplateToMeta(merchantId: string, template: {
   }
   components.push(bodyComponent);
 
+  // 3. Footer (Clean static text only - Meta rejects variables in footers)
   if (template.footerText) {
-    components.push({
-      type: "FOOTER",
-      text: template.footerText,
-    });
+    const cleanFooter = stripEmojisAndFormatting(
+      template.footerText.replace(/\{\{[^}]+\}\}/g, merchant.name || merchant.shop.replace(".myshopify.com", ""))
+    ).slice(0, 60);
+    if (cleanFooter) {
+      components.push({
+        type: "FOOTER",
+        text: cleanFooter,
+      });
+    }
   }
 
-  const templateButtons = (template as any).buttons || [];
+  // 4. Buttons (Plain text without emojis - max 25 chars per button)
+  const templateButtons = template.buttons || [];
   if (templateButtons && Array.isArray(templateButtons) && templateButtons.length > 0) {
     const metaButtons: any[] = [];
     templateButtons.slice(0, 3).forEach((b: any) => {
+      const cleanBtnText = stripEmojisAndFormatting(b.text || b.title || "Option").slice(0, 25);
       if (b.type === "CTA_URL" || b.url) {
         metaButtons.push({
           type: "URL",
-          text: (b.text || b.title || "View").slice(0, 25),
+          text: cleanBtnText || "View",
           url: b.url && b.url.includes("http") ? b.url : `https://${merchant.shop}`,
         });
       } else {
         metaButtons.push({
           type: "QUICK_REPLY",
-          text: (b.text || b.title || "Reply").slice(0, 25),
+          text: cleanBtnText || "Reply",
         });
       }
     });
@@ -239,23 +270,25 @@ export async function syncTemplateToMeta(merchantId: string, template: {
       });
     }
   } else if (template.buttonType === "CTA_URL" && template.buttonText && template.buttonUrl) {
+    const cleanBtnText = stripEmojisAndFormatting(template.buttonText).slice(0, 25);
     components.push({
       type: "BUTTONS",
       buttons: [
         {
           type: "URL",
-          text: template.buttonText.slice(0, 25),
+          text: cleanBtnText || "View Order",
           url: template.buttonUrl.includes("http") ? template.buttonUrl : `https://${merchant.shop}`,
         },
       ],
     });
   } else if (template.buttonType === "QUICK_REPLY" && template.buttonText) {
+    const cleanBtnText = stripEmojisAndFormatting(template.buttonText).slice(0, 25);
     components.push({
       type: "BUTTONS",
       buttons: [
         {
           type: "QUICK_REPLY",
-          text: template.buttonText.slice(0, 25),
+          text: cleanBtnText || "Reply",
         },
       ],
     });
@@ -702,25 +735,19 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       });
     }
 
-    // 3. Quick Reply / URL Button component parameters if needed
+    // 3. Dynamic URL Button component parameters if needed (Static quick replies do not take parameters)
     const rawButtons = (buttons && buttons.length > 0) ? buttons : (dbTpl?.buttons as any[]) || [];
     rawButtons.slice(0, 3).forEach((b: any, idx: number) => {
-      if (b.type === "QUICK_REPLY" || !b.type) {
-        let btnPayload = b.id || `btn_${idx + 1}`;
-        if (orderNumber) {
-          const cleanNum = orderNumber.replace(/^#/, "");
-          if (btnPayload.startsWith("confirm_order")) btnPayload = `confirm_order_${cleanNum}`;
-          if (btnPayload.startsWith("update_address")) btnPayload = `update_address_${cleanNum}`;
-          if (btnPayload.startsWith("support_query")) btnPayload = `support_query_${cleanNum}`;
-          if (btnPayload.startsWith("confirm_cod")) btnPayload = `confirm_cod_${cleanNum}`;
-          if (btnPayload.startsWith("cancel_cod")) btnPayload = `cancel_cod_${cleanNum}`;
+      if ((b.type === "CTA_URL" || b.type === "URL") && b.url && b.url.includes("{{")) {
+        const urlParams = extractTemplateParameters(b.url, templateVariables || {});
+        if (urlParams.length > 0) {
+          components.push({
+            type: "button",
+            sub_type: "url",
+            index: String(idx),
+            parameters: [{ type: "text", text: urlParams[0] }],
+          });
         }
-        components.push({
-          type: "button",
-          sub_type: "quick_reply",
-          index: String(idx),
-          parameters: [{ type: "payload", payload: btnPayload }],
-        });
       }
     });
 
