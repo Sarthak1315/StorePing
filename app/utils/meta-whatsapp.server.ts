@@ -927,24 +927,74 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       }
     }
 
-    // Auto-Recovery 2: If outside 24h window (#131047 / #132000 / #132001) and freeform text or unapproved template was rejected,
-    // automatically fallback to pre-approved Meta Template (hello_world or default) so message is guaranteed to deliver to the customer!
-    if (!ok && (data.error?.code === 131047 || data.error?.code === 132000 || data.error?.code === 132001)) {
-      const templateFallbackPayload = {
+    // Auto-Recovery 2: If language code mismatch (#132001), retry the merchant's template with the alternate language code (en_US <-> en)
+    if (!ok && (data.error?.code === 132001 || data.error?.message?.includes("does not exist in"))) {
+      if (payload.type === "template" && payload.template) {
+        const currentLang = payload.template.language?.code || "en_US";
+        const altLang = currentLang === "en_US" ? "en" : "en_US";
+        const altPayload = {
+          ...payload,
+          template: {
+            ...payload.template,
+            language: { code: altLang },
+          },
+        };
+        const altResult = await executeSend(altPayload);
+        if (altResult.ok) {
+          ok = true;
+          data = altResult.data;
+        }
+      }
+    }
+
+    // Auto-Recovery 3: If outside 24h window (#131047) and interactive/text failed, retry with user's approved template
+    if (!ok && data.error?.code === 131047 && payload.type !== "template") {
+      const targetTplName = templateName || dbTpl?.metaTemplateName || eventType.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 128);
+      const components: any[] = [];
+
+      if (dbTpl?.headerType === "TEXT" && dbTpl.headerText && templateVariables) {
+        const headerParams = extractTemplateParameters(dbTpl.headerText, templateVariables);
+        if (headerParams.length > 0) {
+          components.push({
+            type: "header",
+            parameters: headerParams.map((text) => ({ type: "text", text })),
+          });
+        }
+      }
+
+      let bodyParamsList: string[] = [];
+      if (templateVariables) {
+        bodyParamsList = extractTemplateParameters(dbTpl?.bodyText || bodyText, templateVariables);
+      }
+      if (bodyParamsList.length > 0) {
+        components.push({
+          type: "body",
+          parameters: bodyParamsList.map((text) => ({ type: "text", text })),
+        });
+      }
+
+      const templatePayload = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
         to: recipientPhone,
         type: "template",
         template: {
-          name: "hello_world",
-          language: { code: "en_US" },
+          name: targetTplName,
+          language: { code: templateLanguage || dbTpl?.language || "en_US" },
+          ...(components.length > 0 ? { components } : {}),
         },
       };
 
-      const fallbackResult = await executeSend(templateFallbackPayload);
-      if (fallbackResult.ok) {
+      let tplResult = await executeSend(templatePayload);
+      if (!tplResult.ok && (tplResult.data.error?.code === 132001 || tplResult.data.error?.message?.includes("does not exist in"))) {
+        const altLang = templatePayload.template.language.code === "en_US" ? "en" : "en_US";
+        templatePayload.template.language.code = altLang;
+        tplResult = await executeSend(templatePayload);
+      }
+
+      if (tplResult.ok) {
         ok = true;
-        data = fallbackResult.data;
+        data = tplResult.data;
       }
     }
 
