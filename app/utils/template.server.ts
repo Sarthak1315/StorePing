@@ -157,7 +157,7 @@ export const DEFAULT_TEMPLATES = [
     headerText: "We Miss You at Store",
     headerMediaUrl: "",
     bodyText:
-      "Hi {{customer_name}}, it has been a while since your last visit! ✨\n\nWe have added exciting new products to our collection. Enjoy a special welcome-back gift of 15% off with code {{discount_code}}.",
+      "Hi {{customer_name}}, it has been a while since your last visit! ✨\n\nWe have added exciting new collections to our store. Use coupon code *{{discount_code}}* to enjoy an exclusive 15% discount on your next order.",
     footerText: "Reply STOP to unsubscribe",
     buttonType: "CTA_URL",
     buttonText: "Shop New Arrivals",
