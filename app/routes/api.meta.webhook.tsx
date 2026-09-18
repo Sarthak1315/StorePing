@@ -125,6 +125,67 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               },
             });
 
+            // Synchronize status with OrderConfirmation and Job records
+            if (status === "FAILED") {
+              const fullErrorMsg = errorMessage
+                ? `${errorMessage} (Code ${errorCode || "Unknown"})`
+                : `Delivery failed by Meta (Code ${errorCode || "Unknown"})`;
+
+              // 1. Update matching OrderConfirmation
+              await db.orderConfirmation.updateMany({
+                where: { metaMessageId },
+                data: {
+                  status: "FAILED",
+                  errorMessage: fullErrorMsg,
+                },
+              });
+
+              // Fallback match by recipient phone if metaMessageId wasn't linked yet
+              if (recipientId && merchant) {
+                const cleanShort = recipientId.replace(/[^0-9]/g, "").slice(-10);
+                await db.orderConfirmation.updateMany({
+                  where: {
+                    merchantId: merchant.id,
+                    customerPhone: { contains: cleanShort },
+                    status: "PENDING",
+                  },
+                  data: {
+                    status: "FAILED",
+                    errorMessage: fullErrorMsg,
+                  },
+                });
+              }
+
+              // 2. Update Job record in queue if present
+              if (merchant) {
+                const recentJobs = await db.job.findMany({
+                  where: {
+                    merchantId: merchant.id,
+                    status: { in: ["PENDING", "PROCESSING", "COMPLETED"] },
+                  },
+                  orderBy: { createdAt: "desc" },
+                  take: 5,
+                });
+                for (const j of recentJobs) {
+                  const p = j.payload as any;
+                  if (p?.recipientPhone && recipientId && p.recipientPhone.includes(recipientId.slice(-10))) {
+                    await db.job.update({
+                      where: { id: j.id },
+                      data: { status: "FAILED", error: fullErrorMsg },
+                    });
+                    break;
+                  }
+                }
+              }
+            } else if (status === "DELIVERED") {
+              await db.orderConfirmation.updateMany({
+                where: { metaMessageId, status: "PENDING" },
+                data: {
+                  status: "DELIVERED",
+                },
+              });
+            }
+
             // Update merchant current month spend & evaluate budget alerts if delivered
             if (merchant && isBillable && (status === "DELIVERED" || status === "READ")) {
               const updated = await db.merchant.update({

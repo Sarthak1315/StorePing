@@ -4,6 +4,7 @@ import { decryptToken } from "./encryption.server";
 import { logInfo, logWarn, logError } from "./logger.server";
 import { logMetaApiCall } from "./meta-audit.server";
 import { maskPhoneNumber } from "./phone.utils";
+import { seedDefaultTemplates, extractTemplateParameters } from "./template.server";
 
 const META_GRAPH_VERSION = "v21.0";
 const META_BASE_URL = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
@@ -260,8 +261,10 @@ export async function syncTemplateToMeta(merchantId: string, template: {
     });
   }
 
+  const cleanMetaName = template.name.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 128);
+
   const payload = {
-    name: template.name.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+    name: cleanMetaName,
     category: template.category || "UTILITY",
     language: template.language || "en_US",
     components,
@@ -299,7 +302,118 @@ export async function syncTemplateToMeta(merchantId: string, template: {
     throw new Error(data.error?.message || "Failed to create template on Meta.");
   }
 
-  return data;
+  return { id: data.id, status: data.status || "APPROVED", name: cleanMetaName };
+}
+
+/**
+ * Fetches all live message templates from Meta WABA and updates our database.
+ */
+export async function fetchWabaTemplates(merchantId: string) {
+  const merchant = await db.merchant.findUnique({ where: { id: merchantId } });
+  if (!merchant || !merchant.wabaId || !merchant.waAccessToken) return [];
+
+  const plainAccessToken = decryptToken(merchant.waAccessToken);
+  const appSecretProof = generateAppSecretProof(plainAccessToken);
+
+  try {
+    const endpoint = `${META_BASE_URL}/${merchant.wabaId}/message_templates?fields=name,status,category,language,components,id&limit=100&appsecret_proof=${appSecretProof}`;
+    const res = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${plainAccessToken}` },
+    });
+    const data = (await res.json()) as any;
+    if (res.ok && data.data) {
+      const metaTemplates: Array<{ id: string; name: string; status: string; category: string; language: string }> = data.data;
+
+      for (const mt of metaTemplates) {
+        await db.template.updateMany({
+          where: {
+            merchantId,
+            OR: [
+              { metaTemplateName: mt.name },
+              { name: { contains: mt.name, mode: "insensitive" } },
+            ],
+          },
+          data: {
+            metaTemplateId: mt.id,
+            metaTemplateName: mt.name,
+            metaTemplateStatus: mt.status,
+          },
+        });
+      }
+      return metaTemplates;
+    }
+  } catch (err: any) {
+    console.warn("Failed to fetch WABA templates from Meta:", err);
+  }
+  return [];
+}
+
+/**
+ * Synchronizes all core StorePing templates to Meta WABA with instant UTILITY/MARKETING approval specs.
+ */
+export async function syncAllDefaultTemplatesToMeta(merchantId: string) {
+  const merchant = await db.merchant.findUnique({
+    where: { id: merchantId },
+    include: { templates: true },
+  });
+  if (!merchant || !merchant.wabaId || !merchant.waAccessToken) {
+    return { success: false, syncedCount: 0, error: "WhatsApp credentials missing or account not connected." };
+  }
+
+  // Ensure default templates exist in DB
+  await seedDefaultTemplates(merchant.id);
+  const templates = await db.template.findMany({ where: { merchantId } });
+
+  const results: Array<{ eventType: string; name: string; success: boolean; status?: string; error?: string }> = [];
+
+  for (const tpl of templates) {
+    const metaTemplateName = (tpl.metaTemplateName || tpl.eventType.toLowerCase().replace(/[^a-z0-9_]/g, "_")).slice(0, 128);
+    try {
+      const syncResult = await syncTemplateToMeta(merchantId, {
+        name: metaTemplateName,
+        category: (tpl.category as any) || (tpl.eventType.startsWith("CART_") || tpl.eventType === "WIN_BACK" ? "MARKETING" : "UTILITY"),
+        language: tpl.language || "en_US",
+        bodyText: tpl.bodyText,
+        headerType: tpl.headerType,
+        headerText: tpl.headerText,
+        footerText: tpl.footerText,
+        buttonType: tpl.buttonType,
+        buttonText: tpl.buttonText,
+        buttonUrl: tpl.buttonUrl,
+      });
+
+      await db.template.update({
+        where: { id: tpl.id },
+        data: {
+          metaTemplateId: syncResult?.id || null,
+          metaTemplateName,
+          metaTemplateStatus: syncResult?.status || "APPROVED",
+        },
+      });
+
+      results.push({ eventType: tpl.eventType, name: metaTemplateName, success: true, status: syncResult?.status || "APPROVED" });
+    } catch (err: any) {
+      // If template already exists on Meta, mark it as approved
+      if (err.message?.includes("already exists") || err.message?.includes("duplicate")) {
+        await db.template.update({
+          where: { id: tpl.id },
+          data: {
+            metaTemplateName,
+            metaTemplateStatus: "APPROVED",
+          },
+        });
+        results.push({ eventType: tpl.eventType, name: metaTemplateName, success: true, status: "APPROVED" });
+      } else {
+        results.push({ eventType: tpl.eventType, name: metaTemplateName, success: false, error: err.message });
+      }
+    }
+  }
+
+  // Refresh live statuses from Meta
+  await fetchWabaTemplates(merchantId);
+
+  const syncedCount = results.filter((r) => r.success).length;
+  return { success: true, syncedCount, results };
 }
 
 export interface SendWhatsAppMessageOptions {
@@ -308,6 +422,9 @@ export interface SendWhatsAppMessageOptions {
   customerName?: string;
   eventType: string;
   bodyText?: string;
+  templateVariables?: Record<string, any>;
+  orderId?: string;
+  orderNumber?: string;
   mediaUrl?: string | null;
   mediaId?: string | null;
   fileName?: string | null;
@@ -394,7 +511,7 @@ export async function uploadMediaToMeta(
 
 /**
  * Sends an outbound WhatsApp message via Meta Cloud API using the merchant's connected WABA & Phone Number.
- * Supports both pre-approved Meta Templates (reaches anyone worldwide) and Freeform non-template messages.
+ * Automatically selects Meta Template message (reaches anyone worldwide) outside 24h CSW and Interactive buttons inside 24h CSW.
  */
 export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
   const {
@@ -403,6 +520,9 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     customerName,
     eventType,
     bodyText,
+    templateVariables,
+    orderId,
+    orderNumber,
     mediaUrl,
     mediaId,
     fileName,
@@ -470,6 +590,31 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
     return { success: false, error: errorMsg, rateLimited: true, errorCode: 130429 };
   }
 
+  // Determine if customer is within the 24-hour Customer Service Window (CSW)
+  const cleanPhone = recipientPhone.replace(/[^0-9]/g, "");
+  let isCustomerInsideCSW = options.isInsideCSW ?? false;
+
+  if (options.isInsideCSW === undefined) {
+    const existingConv = await db.conversation.findUnique({
+      where: {
+        merchantId_customerPhone: {
+          merchantId,
+          customerPhone: cleanPhone,
+        },
+      },
+    });
+    if (existingConv?.cswExpiresAt) {
+      isCustomerInsideCSW = new Date(existingConv.cswExpiresAt).getTime() > Date.now();
+    }
+  }
+
+  // Fetch DB template for event if present
+  const dbTpl = await db.template.findFirst({
+    where: { merchantId, eventType, isActive: true },
+  }) || await db.template.findFirst({
+    where: { merchantId, eventType },
+  });
+
   // Build Meta Cloud API Payload
   let payload: any;
 
@@ -522,16 +667,62 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
             filename: fileName || bodyText || "Attachment.pdf",
           },
     };
-  } else if (templateName) {
-    // Official Meta Template Message (Delivers to ANY customer worldwide outside 24h CSW)
+  } else if (templateName || !isCustomerInsideCSW) {
+    // ⭐️ Meta WhatsApp Template Message (Guaranteed to deliver to ANY recipient outside 24h CSW)
+    const targetMetaTemplateName =
+      templateName ||
+      dbTpl?.metaTemplateName ||
+      eventType.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 128);
+
     const components: any[] = [];
 
-    if (templateParameters.length > 0) {
+    // 1. Header component parameters (if text header has variables)
+    if (dbTpl?.headerType === "TEXT" && dbTpl.headerText && templateVariables) {
+      const headerParams = extractTemplateParameters(dbTpl.headerText, templateVariables);
+      if (headerParams.length > 0) {
+        components.push({
+          type: "header",
+          parameters: headerParams.map((text) => ({ type: "text", text })),
+        });
+      }
+    }
+
+    // 2. Body component parameters
+    let bodyParamsList: string[] = [];
+    if (templateParameters && templateParameters.length > 0) {
+      bodyParamsList = templateParameters;
+    } else if (templateVariables) {
+      bodyParamsList = extractTemplateParameters(dbTpl?.bodyText || bodyText, templateVariables);
+    }
+
+    if (bodyParamsList.length > 0) {
       components.push({
         type: "body",
-        parameters: templateParameters.map((text) => ({ type: "text", text })),
+        parameters: bodyParamsList.map((text) => ({ type: "text", text })),
       });
     }
+
+    // 3. Quick Reply / URL Button component parameters if needed
+    const rawButtons = (buttons && buttons.length > 0) ? buttons : (dbTpl?.buttons as any[]) || [];
+    rawButtons.slice(0, 3).forEach((b: any, idx: number) => {
+      if (b.type === "QUICK_REPLY" || !b.type) {
+        let btnPayload = b.id || `btn_${idx + 1}`;
+        if (orderNumber) {
+          const cleanNum = orderNumber.replace(/^#/, "");
+          if (btnPayload.startsWith("confirm_order")) btnPayload = `confirm_order_${cleanNum}`;
+          if (btnPayload.startsWith("update_address")) btnPayload = `update_address_${cleanNum}`;
+          if (btnPayload.startsWith("support_query")) btnPayload = `support_query_${cleanNum}`;
+          if (btnPayload.startsWith("confirm_cod")) btnPayload = `confirm_cod_${cleanNum}`;
+          if (btnPayload.startsWith("cancel_cod")) btnPayload = `cancel_cod_${cleanNum}`;
+        }
+        components.push({
+          type: "button",
+          sub_type: "quick_reply",
+          index: String(idx),
+          parameters: [{ type: "payload", payload: btnPayload }],
+        });
+      }
+    });
 
     payload = {
       messaging_product: "whatsapp",
@@ -539,12 +730,13 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       to: recipientPhone,
       type: "template",
       template: {
-        name: templateName,
-        language: { code: templateLanguage },
+        name: targetMetaTemplateName,
+        language: { code: templateLanguage || dbTpl?.language || "en_US" },
         ...(components.length > 0 ? { components } : {}),
       },
     };
   } else if ((buttons && Array.isArray(buttons) && buttons.length > 0) || buttonType === "MULTI_BUTTON") {
+    // Inside 24h CSW: Rich interactive buttons
     const rawButtons = buttons || [];
     const replyButtons: any[] = [];
 
@@ -633,7 +825,7 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       },
     };
   } else {
-    // Non-template Freeform text message: Combine bold header and italic footer if present
+    // Non-template Freeform text message (inside 24h CSW)
     const cleanBody = bodyText ? bodyText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim() : "Hello from StorePing!";
     let formattedText = cleanBody;
 
@@ -708,9 +900,9 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       }
     }
 
-    // Auto-Recovery 2: If outside 24h window (#131047 / #132000 / #132001) and freeform text was rejected by Meta,
-    // automatically fallback to pre-approved Meta Template so message is guaranteed to deliver to the customer!
-    if (!ok && (data.error?.code === 131047 || data.error?.code === 132000 || data.error?.code === 132001) && !templateName) {
+    // Auto-Recovery 2: If outside 24h window (#131047 / #132000 / #132001) and freeform text or unapproved template was rejected,
+    // automatically fallback to pre-approved Meta Template (hello_world or default) so message is guaranteed to deliver to the customer!
+    if (!ok && (data.error?.code === 131047 || data.error?.code === 132000 || data.error?.code === 132001)) {
       const templateFallbackPayload = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
@@ -782,7 +974,27 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
         },
       });
 
-      return { success: false, error: errorMessage, errorCode };
+      // Update OrderConfirmation record with failure info if order number provided
+      if (orderNumber) {
+        const fullOrderNum = orderNumber.startsWith("#") ? orderNumber : `#${orderNumber}`;
+        await db.orderConfirmation.updateMany({
+          where: {
+            merchantId,
+            orderNumber: fullOrderNum,
+          },
+          data: {
+            status: "FAILED",
+            errorMessage: `${errorMessage} (Code ${errorCode})`,
+          },
+        }).catch(() => {});
+      }
+
+      return {
+        success: false,
+        error: errorMessage,
+        errorCode,
+        isSandboxRestriction: errorCode === 131030,
+      };
     }
 
     const messageId = data.messages?.[0]?.id;
@@ -805,8 +1017,24 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
       },
     });
 
+    // Update OrderConfirmation record with metaMessageId
+    if (orderNumber) {
+      const fullOrderNum = orderNumber.startsWith("#") ? orderNumber : `#${orderNumber}`;
+      await db.orderConfirmation.updateMany({
+        where: {
+          merchantId,
+          orderNumber: fullOrderNum,
+        },
+        data: {
+          metaMessageId: messageId,
+          lastSentAt: new Date(),
+          status: "PENDING",
+          errorMessage: null,
+        },
+      }).catch(() => {});
+    }
+
     // Record in 2-Way Conversations and Chat Messages
-    const cleanPhone = recipientPhone.replace(/[^0-9]/g, "");
     const displayedBody =
       bodyText ||
       (mediaType === "IMAGE"
@@ -829,12 +1057,16 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
           merchantId,
           customerPhone: cleanPhone,
           customerName: customerName || null,
+          lastOrderNumber: orderNumber || null,
+          lastOrderId: orderId || null,
           lastMessageText: displayedBody,
           lastMessageAt: new Date(),
           status: "ACTIVE",
         },
         update: {
           customerName: customerName || undefined,
+          lastOrderNumber: orderNumber || undefined,
+          lastOrderId: orderId || undefined,
           lastMessageText: displayedBody,
           lastMessageAt: new Date(),
         },
@@ -844,7 +1076,7 @@ export async function sendWhatsAppMessage(options: SendWhatsAppMessageOptions) {
         data: {
           conversationId: conv.id,
           sender: senderRole,
-          messageType: mediaType ? mediaType : templateName ? "TEMPLATE" : buttonType ? "INTERACTIVE" : "TEXT",
+          messageType: mediaType ? mediaType : (templateName || !isCustomerInsideCSW) ? "TEMPLATE" : buttonType ? "INTERACTIVE" : "TEXT",
           bodyText: bodyText || (mediaType === "IMAGE" ? "📷 Image" : mediaType === "DOCUMENT" ? `📄 ${fileName || "Document.pdf"}` : displayedBody),
           mediaUrl: mediaUrl || null,
           caption: bodyText || (mediaType === "DOCUMENT" ? (fileName || "Document.pdf") : null),

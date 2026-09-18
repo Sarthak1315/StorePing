@@ -159,6 +159,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         customerName: "Test Customer",
         eventType: "ORDER_CONFIRM_ADDRESS",
         orderId: testOrderId,
+        templateName: "order_confirm_address",
         templateVariables: {
           customer_name: "Test Customer",
           order_number: testOrderNum.replace(/^#/, ""),
@@ -180,9 +181,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Process immediately
     const procResult = await processPendingJobs(5);
 
+    const testJob = await db.job.findFirst({
+      where: {
+        merchantId: merchant.id,
+        payload: {
+          path: ["orderId"],
+          equals: testOrderId,
+        },
+      },
+    });
+
+    if (testJob && testJob.status === "FAILED") {
+      return json<AutomationActionData>({
+        success: false,
+        error: `Delivery Notice: ${testJob.error || "Meta Graph API could not deliver message."}`,
+      });
+    }
+
     return json<AutomationActionData>({
       success: true,
-      message: `🎉 Test order automation triggered! Order ${testOrderNum} was enqueued and processed (${procResult.processed > 0 ? "Delivered to WhatsApp ✓" : "Queued in Live Status"}). Check your WhatsApp!`,
+      message: `🎉 Test order automation triggered! Order ${testOrderNum} was dispatched (${procResult.processed > 0 ? "Delivered to WhatsApp ✓" : "Queued in Live Status"}). Check your WhatsApp!`,
     });
   }
 
@@ -439,29 +457,49 @@ export default function AutomationsPage() {
           {customerName} • {recipient}
         </Text>
       </BlockStack>,
-      <Badge
-        key={`badge-${job.id}`}
-        tone={
-          job.status === "COMPLETED"
-            ? "success"
-            : job.status === "PENDING"
-            ? "attention"
-            : job.status === "PROCESSING"
-            ? "info"
-            : job.status === "CANCELLED"
-            ? undefined
-            : "critical"
-        }
-      >
-        {job.status}
-      </Badge>,
+      job.error ? (
+        <Tooltip content={job.error} key={`badge-${job.id}`}>
+          <Badge
+            tone={
+              job.status === "COMPLETED"
+                ? "success"
+                : job.status === "PENDING"
+                ? "attention"
+                : job.status === "PROCESSING"
+                ? "info"
+                : job.status === "CANCELLED"
+                ? undefined
+                : "critical"
+            }
+          >
+            {job.status}
+          </Badge>
+        </Tooltip>
+      ) : (
+        <Badge
+          key={`badge-${job.id}`}
+          tone={
+            job.status === "COMPLETED"
+              ? "success"
+              : job.status === "PENDING"
+              ? "attention"
+              : job.status === "PROCESSING"
+              ? "info"
+              : job.status === "CANCELLED"
+              ? undefined
+              : "critical"
+          }
+        >
+          {job.status}
+        </Badge>
+      ),
       <Text key={`time-${job.id}`} as="span" variant="bodySm">
         {formatTiming(job)}
       </Text>,
       <Text key={`attempts-${job.id}`} as="span" variant="bodyXs" tone="subdued">
         {job.attempts} / {job.maxAttempts}
       </Text>,
-      <InlineStack key={`actions-${job.id}`} gap="150">
+      <InlineStack key={`actions-${job.id}`} gap="150" blockAlign="center">
         {job.status === "PENDING" && (
           <>
             <Button
@@ -483,13 +521,22 @@ export default function AutomationsPage() {
           </>
         )}
         {job.status === "FAILED" && (
-          <Button
-            size="slim"
-            onClick={() => handleRetryJob(job.id)}
-            loading={isSubmitting}
-          >
-            🔄 Retry
-          </Button>
+          <InlineStack gap="100" blockAlign="center">
+            {job.error && (
+              <Tooltip content={job.error}>
+                <Text as="span" variant="bodyXs" tone="critical" truncate>
+                  ⚠️ {job.error.slice(0, 24)}...
+                </Text>
+              </Tooltip>
+            )}
+            <Button
+              size="slim"
+              onClick={() => handleRetryJob(job.id)}
+              loading={isSubmitting}
+            >
+              🔄 Retry
+            </Button>
+          </InlineStack>
         )}
         {job.status === "COMPLETED" && (
           <Text as="span" variant="bodyXs" tone="success">

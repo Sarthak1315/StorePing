@@ -22,7 +22,7 @@ import db from "../db.server";
 import { seedDefaultTemplates } from "../utils/template.server";
 import { interpolateVariables } from "../utils/template.shared";
 import { logInfo, logError } from "../utils/logger.server";
-import { syncTemplateToMeta, sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
+import { syncTemplateToMeta, syncAllDefaultTemplatesToMeta, sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
 import { formatWhatsAppText } from "../utils/whatsapp-formatter";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -69,6 +69,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const merchant = await db.merchant.findUnique({ where: { shop } });
   if (!merchant) throw new Response("Merchant not found", { status: 404 });
+
+  // 0. Sync All Default Templates to Meta WABA
+  if (actionType === "SYNC_ALL_TO_META") {
+    const syncResult = await syncAllDefaultTemplatesToMeta(merchant.id);
+    return json({
+      success: syncResult.success,
+      testSent: false,
+      testError: null,
+      testPhone: null,
+      metaSyncResult: syncResult.success ? `Successfully synced ${syncResult.syncedCount} templates to your Meta WhatsApp Business Account!` : null,
+      metaSyncError: syncResult.success ? null : syncResult.error,
+    });
+  }
 
   // 1. Handle Test Message Sending from Templates Page
   if (actionType === "SEND_TEST") {
@@ -401,11 +414,22 @@ export default function TemplatesAndSimulatorPage() {
     { label: "🤖 24/7 Support Auto-Reply", value: "SUPPORT_AUTO_REPLY" },
   ];
 
+  const handleSyncAllTemplates = () => {
+    const form = new FormData();
+    form.append("actionType", "SYNC_ALL_TO_META");
+    fetcher.submit(form, { method: "POST" });
+  };
+
   return (
     <Page
       fullWidth
       title="Templates"
       subtitle="Create, customize, and test WhatsApp message templates with interactive buttons."
+      primaryAction={{
+        content: "⚡ Sync All Templates to Meta WABA",
+        onAction: handleSyncAllTemplates,
+        loading: isSubmitting && fetcher.formData?.get("actionType") === "SYNC_ALL_TO_META",
+      }}
     >
       <BlockStack gap="500">
         <Layout>

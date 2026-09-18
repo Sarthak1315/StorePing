@@ -129,11 +129,13 @@ model Template {
   buttonText     String?
   buttonUrl      String?
   buttons        Json?     // Array of { id, text, type, url? } for interactive multi-button payloads
-  isActive       Boolean   @default(true)
-  metaTemplateId String?
+  isActive           Boolean   @default(true)
+  metaTemplateId     String?
+  metaTemplateName   String?
+  metaTemplateStatus String?   @default("APPROVED") // APPROVED, PENDING, REJECTED, NOT_SYNCED
   
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   @@index([merchantId, eventType])
   @@map("storeping_Template")
@@ -152,10 +154,12 @@ model OrderConfirmation {
   currency           String    @default("INR")
   shippingAddress    String?   @db.Text
   itemsSummary       String?   @db.Text
-  status             String    @default("PENDING") // PENDING, CONFIRMED, UPDATE_REQUESTED, CANCELLED
+  status             String    @default("PENDING") // PENDING, DELIVERED, CONFIRMED, UPDATE_REQUESTED, ADDRESS_UPDATED, QUERY_REQUESTED, CANCELLED, FAILED
   confirmedAt        DateTime?
   customerNotes      String?   @db.Text // Address or contact update notes from customer
   lastSentAt         DateTime?
+  metaMessageId      String?
+  errorMessage       String?   @db.Text
   
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt

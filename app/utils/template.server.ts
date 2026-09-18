@@ -5,6 +5,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "ORDER_CONFIRM_ADDRESS",
     name: "Order & Delivery Address Confirmation (Interactive 3-Button)",
+    metaTemplateName: "order_confirm_address",
     category: "UTILITY",
     language: "en",
     headerType: "TEXT",
@@ -26,6 +27,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "ORDER_CONFIRM",
     name: "Standard Order Placed Confirmation",
+    metaTemplateName: "order_confirm",
     category: "UTILITY",
     language: "en",
     headerType: "TEXT",
@@ -45,6 +47,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "COD_CONFIRM",
     name: "Cash on Delivery (COD) Verification",
+    metaTemplateName: "cod_confirm",
     category: "UTILITY",
     language: "en",
     headerType: "TEXT",
@@ -66,6 +69,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "ORDER_SHIPPED",
     name: "Order Shipped & Live Tracking",
+    metaTemplateName: "order_shipped",
     category: "UTILITY",
     language: "en",
     headerType: "TEXT",
@@ -85,6 +89,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "ORDER_DELIVERED",
     name: "Order Delivered + Review Request",
+    metaTemplateName: "order_delivered",
     category: "UTILITY",
     language: "en",
     headerType: "TEXT",
@@ -105,6 +110,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "CART_RECOVERY_1",
     name: "Abandoned Cart Reminder (Step 1 - 30 min)",
+    metaTemplateName: "cart_recovery_1",
     category: "MARKETING",
     language: "en",
     headerType: "IMAGE",
@@ -124,6 +130,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "CART_RECOVERY_2",
     name: "Abandoned Cart Urgency + 10% Discount (Step 2 - 6 hr)",
+    metaTemplateName: "cart_recovery_2",
     category: "MARKETING",
     language: "en",
     headerType: "TEXT",
@@ -143,6 +150,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "WIN_BACK",
     name: "Customer Win-Back (Inactive > 45 Days)",
+    metaTemplateName: "win_back",
     category: "MARKETING",
     language: "en",
     headerType: "TEXT",
@@ -162,6 +170,7 @@ export const DEFAULT_TEMPLATES = [
   {
     eventType: "SUPPORT_AUTO_REPLY",
     name: "24/7 Support Instant Auto-Greeting",
+    metaTemplateName: "support_auto_reply",
     category: "UTILITY",
     language: "en",
     headerType: "TEXT",
@@ -179,6 +188,27 @@ export const DEFAULT_TEMPLATES = [
 ];
 
 /**
+ * Extracts the values for positional Meta template parameters {{1}}, {{2}}, etc.
+ * from the template text and the provided templateVariables dictionary.
+ */
+export function extractTemplateParameters(
+  templateText: string | null | undefined,
+  variables: Record<string, any>
+): string[] {
+  if (!templateText) return [];
+  const variableMatches = templateText.match(/\{\{([a-zA-Z0-9_]+)\}\}/g) || [];
+  return variableMatches.map((match) => {
+    const varName = match.replace(/[{}]/g, "").trim();
+    const val =
+      variables[varName] ??
+      variables[varName.toLowerCase()] ??
+      variables[varName.toUpperCase()] ??
+      "—";
+    return String(val || "—").trim();
+  });
+}
+
+/**
  * Ensures all default templates exist for a merchant in the database,
  * and updates existing templates if needed.
  */
@@ -194,6 +224,7 @@ export async function seedDefaultTemplates(merchantId: string) {
           merchantId,
           eventType: tpl.eventType,
           name: tpl.name,
+          metaTemplateName: tpl.metaTemplateName,
           category: tpl.category,
           language: tpl.language,
           headerType: tpl.headerType,
@@ -207,6 +238,11 @@ export async function seedDefaultTemplates(merchantId: string) {
           buttons: tpl.buttons as any,
           isActive: tpl.isActive,
         },
+      });
+    } else if (!existing.metaTemplateName) {
+      await db.template.update({
+        where: { id: existing.id },
+        data: { metaTemplateName: tpl.metaTemplateName },
       });
     }
   }

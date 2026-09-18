@@ -25,7 +25,7 @@ import {
 import { CheckIcon, AlertCircleIcon, ChatIcon, SendIcon, SearchIcon } from "@shopify/polaris-icons";
 import { authenticate, ensureWebhooksRegistered } from "../shopify.server";
 import db from "../db.server";
-import { sendWhatsAppMessage } from "../utils/meta-whatsapp.server";
+import { sendWhatsAppMessage, syncAllDefaultTemplatesToMeta } from "../utils/meta-whatsapp.server";
 import { logInfo, logError } from "../utils/logger.server";
 import { normalizePhoneNumber } from "../utils/phone.utils";
 import { seedDefaultTemplates } from "../utils/template.server";
@@ -211,6 +211,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return {
       ...o,
       confirmationStatus: record?.status || "NOT_SENT",
+      errorMessage: record?.errorMessage || null,
+      metaMessageId: record?.metaMessageId || null,
       confirmedAt: record?.confirmedAt ? new Date(record.confirmedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }) : null,
       customerNotes: record?.customerNotes || null,
       lastSentAt: record?.lastSentAt || null,
@@ -417,6 +419,10 @@ export async function action({ request }: ActionFunctionArgs) {
         recipientPhone: cleanPhone,
         customerName,
         eventType,
+        orderId,
+        orderNumber,
+        templateName: template?.metaTemplateName || undefined,
+        templateVariables,
         bodyText,
         headerType: template?.headerType || "TEXT",
         headerText: headerText || undefined,
@@ -430,6 +436,40 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
       if (!result.success) {
+        // Record failed confirmation status for UI transparency
+        await db.orderConfirmation.upsert({
+          where: {
+            merchantId_orderNumber: {
+              merchantId: merchant.id,
+              orderNumber,
+            },
+          },
+          create: {
+            merchantId: merchant.id,
+            orderId: orderId || orderNumber,
+            orderNumber,
+            customerPhone: cleanPhone,
+            customerName,
+            totalAmount,
+            currency,
+            shippingAddress,
+            itemsSummary: items,
+            status: "FAILED",
+            errorMessage: result.error || "Delivery failed",
+            lastSentAt: new Date(),
+          },
+          update: {
+            customerPhone: cleanPhone,
+            customerName,
+            totalAmount,
+            shippingAddress,
+            itemsSummary: items,
+            status: "FAILED",
+            errorMessage: result.error || "Delivery failed",
+            lastSentAt: new Date(),
+          },
+        });
+
         return json<ActionData>({ success: false, error: result.error || "Failed to dispatch WhatsApp message" }, { status: 500 });
       }
 
@@ -452,6 +492,8 @@ export async function action({ request }: ActionFunctionArgs) {
           shippingAddress,
           itemsSummary: items,
           status: "PENDING",
+          metaMessageId: result.messageId || null,
+          errorMessage: null,
           lastSentAt: new Date(),
         },
         update: {
@@ -461,6 +503,8 @@ export async function action({ request }: ActionFunctionArgs) {
           shippingAddress,
           itemsSummary: items,
           status: "PENDING",
+          metaMessageId: result.messageId || null,
+          errorMessage: null,
           lastSentAt: new Date(),
         },
       });
@@ -474,11 +518,23 @@ export async function action({ request }: ActionFunctionArgs) {
         success: true,
         orderNumber,
         phone: cleanPhone,
-        message: `WhatsApp notification successfully delivered to +${cleanPhone}!`,
+        message: `WhatsApp notification successfully dispatched to +${cleanPhone}!`,
       });
     } catch (err: any) {
       return json<ActionData>({ success: false, error: err.message }, { status: 500 });
     }
+  }
+
+  // 1.5 Sync all default templates to Meta WABA
+  if (intent === "syncMetaTemplates") {
+    const syncResult = await syncAllDefaultTemplatesToMeta(merchant.id);
+    return json<ActionData>({
+      success: syncResult.success,
+      error: syncResult.success ? undefined : syncResult.error,
+      message: syncResult.success
+        ? `Successfully synced ${syncResult.syncedCount} templates to your Meta WhatsApp Business Account!`
+        : `Template sync notice: ${syncResult.error}`,
+    });
   }
 
   // 2. Manual WhatsApp Send for Abandoned Cart
@@ -877,6 +933,12 @@ export default function OrdersManualPage() {
     { id: "carts", content: `🛒 Abandoned Checkouts (${abandonedCarts.length})` },
   ];
 
+  const handleSyncMetaTemplates = () => {
+    const form = new FormData();
+    form.append("intent", "syncMetaTemplates");
+    fetcher.submit(form, { method: "POST" });
+  };
+
   // Helper to render confirmation badge
   const renderConfirmationBadge = (order: any) => {
     switch (order.confirmationStatus) {
@@ -905,6 +967,27 @@ export default function OrdersManualPage() {
             <Badge tone="attention">⏳ Awaiting Address Text</Badge>
           </Tooltip>
         );
+      case "DELIVERED":
+        return (
+          <Tooltip content={`Delivered to customer's WhatsApp ${order.lastSentAt ? `at ${new Date(order.lastSentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}`}>
+            <Badge tone="success">📲 Delivered • Awaiting Reply</Badge>
+          </Tooltip>
+        );
+      case "FAILED":
+        return (
+          <Tooltip content={order.errorMessage || "Delivery failed (Outside 24h window or invalid number). Click Retry to resend."}>
+            <InlineStack gap="100" blockAlign="center">
+              <Badge tone="critical">❌ Delivery Failed</Badge>
+              <Button
+                size="micro"
+                variant="plain"
+                onClick={() => handleOpenOrderModal(order, "ORDER_CONFIRM_ADDRESS")}
+              >
+                Retry
+              </Button>
+            </InlineStack>
+          </Tooltip>
+        );
       case "QUERY_REQUESTED":
         return (
           <Tooltip content="Customer clicked Ask Query / Support">
@@ -919,7 +1002,7 @@ export default function OrdersManualPage() {
         );
       case "PENDING":
         return (
-          <Tooltip content="WhatsApp confirmation sent, awaiting customer response">
+          <Tooltip content="WhatsApp confirmation sent, awaiting delivery or customer response">
             <Badge tone="info">⏳ Pending Confirmation</Badge>
           </Tooltip>
         );
@@ -1006,6 +1089,13 @@ export default function OrdersManualPage() {
         onAction: handleSyncAllOrders,
         loading: isSubmitting && fetcher.formData?.get("intent") === "syncAllOrders",
       }}
+      secondaryActions={[
+        {
+          content: "Sync Meta Templates",
+          onAction: handleSyncMetaTemplates,
+          loading: isSubmitting && fetcher.formData?.get("intent") === "syncMetaTemplates",
+        },
+      ]}
     >
       <BlockStack gap="400">
 

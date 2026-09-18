@@ -9,6 +9,7 @@ export interface JobPayload {
   recipientPhone: string;
   customerName?: string;
   eventType: string;
+  templateName?: string;
   templateVariables: Record<string, string | undefined>;
   checkoutToken?: string; // For cart recovery cancellation checks
   orderId?: string;
@@ -249,6 +250,10 @@ export async function processPendingJobs(limit = 20) {
       recipientPhone: payload.recipientPhone,
       customerName: payload.customerName,
       eventType: payload.eventType,
+      templateName: template.metaTemplateName || undefined,
+      templateVariables: payload.templateVariables,
+      orderId: payload.orderId,
+      orderNumber: orderNumber || payload.orderNumber,
       bodyText: interpolatedBody,
       headerType: template.headerType,
       headerText: interpolatedHeader,
@@ -267,7 +272,7 @@ export async function processPendingJobs(limit = 20) {
       });
 
       // Update OrderConfirmation record if this is an order confirmation event
-      if (orderNumber && (payload.eventType === "ORDER_CONFIRM_ADDRESS" || payload.eventType === "ORDER_CONFIRM")) {
+      if (orderNumber && (payload.eventType === "ORDER_CONFIRM_ADDRESS" || payload.eventType === "ORDER_CONFIRM" || payload.eventType === "COD_CONFIRM")) {
         const fullOrderNum = orderNumber.startsWith("#") ? orderNumber : `#${orderNumber}`;
         await db.orderConfirmation.updateMany({
           where: {
@@ -275,7 +280,10 @@ export async function processPendingJobs(limit = 20) {
             orderNumber: fullOrderNum,
           },
           data: {
+            metaMessageId: result.messageId || undefined,
             lastSentAt: new Date(),
+            status: "PENDING",
+            errorMessage: null,
           },
         }).catch(() => {});
       }
